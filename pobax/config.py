@@ -39,8 +39,16 @@ class PPOHyperparams(Tap):
     double_critic: bool = False  # Do we have two critic heads?
     action_concat: bool = False  # Do we concatenate actions to our observation?
 
+    # Memory module selection. 'urnn' = unitary RNN (complex hidden state).
+    memory_type: Literal['gru', 'urnn'] = 'gru'
+    urnn_variant: Literal['standard', 'legacy'] = 'standard'  # 'standard' = input-dependent d/R, 'legacy' = learnable.
+    urnn_input_dense: bool = True  # Add complex input-embed to the hidden state each step (standard variant only).
+    urnn_norm_scale: float = 1.0   # Scales the initial complex carry.
+    urnn_perm_seed: int = 0        # Seed for the fixed permutation inside the unitary transform.
+
     # Below are hyperparameters that can be swept with jax.vmap.
-    lr: list[float] = [2.5e-4]  # Learning rate
+    lr: list[float] = [2.5e-4]  # Learning rate (applies to all real params; for uRNN, applies only to the real group).
+    complex_lr: list[float] = [8e-5]  # LR for the complex param group under memory_type='urnn'. Ignored otherwise.
     lambda0: list[float] = [0.95]  # GAE lambda_0
     lambda1: list[float] = [0.5]  # GAE lambda_1
     ld_weight: list[float] = [0.0]  # How much to we weight the LD loss? only applies when double_critic is True.
