@@ -2,6 +2,8 @@ from gymnax.environments import environment, spaces
 
 from pobax.envs.jax.battleship import Battleship
 from .actor_critic import ActorCritic
+from .network import (ScannedRNN, ScannedURNN, URNNCell, LegacyURNNCell,
+                      ModReLU, initial_urnn_carry, get_memory_initial_carry)
 
 from .continuous import *
 from .discrete import *

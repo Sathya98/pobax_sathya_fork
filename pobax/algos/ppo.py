@@ -20,7 +20,7 @@ from pobax.algos.run_helper import vmap_and_train
 from pobax.config import PPOHyperparams
 from pobax.envs import get_env
 from pobax.envs.wrappers.gymnax import LogEnvState
-from pobax.models import ScannedRNN, get_network_fn
+from pobax.models import ScannedRNN, get_network_fn, get_memory_initial_carry
 from pobax.utils.file_system import get_results_path, numpyify
 from pobax.envs import brax_envs
 from pobax.utils.sweep import get_grid_hparams, get_randomly_sampled_hparams
@@ -157,6 +157,64 @@ def filter_period_first_dim(x, n: int):
         return x[::n]
 
 
+def _conjugate_complex_grads() -> optax.GradientTransformation:
+    """Conjugate complex-dtype gradient leaves (Wirtinger fix).
+
+    JAX's ``grad`` for f: C -> R returns the holomorphic derivative
+    ``df/dz`` — the *ascent* direction under the torch convention is
+    ``conj(df/dz) = df/dz_bar``, which is what torch's ``.grad``
+    already stores. To make adam's first-moment tracking and the
+    final ``z <- z - lr * update`` match torch exactly, we conjugate
+    complex grads here before anything else in the optimizer chain.
+    Verified empirically: raw JAX grad on ``|z|^2`` moves *away* from
+    the minimum; the conjugated grad moves toward it.
+    """
+    def init_fn(_):
+        return optax.EmptyState()
+
+    def update_fn(updates, state, params=None):
+        updates = jax.tree_util.tree_map(
+            lambda g: jnp.conj(g) if jnp.iscomplexobj(g) else g,
+            updates,
+        )
+        return updates, state
+
+    return optax.GradientTransformation(init_fn, update_fn)
+
+
+def _build_optimizer(memory_type: str, lr_or_schedule, complex_lr_or_schedule,
+                     max_grad_norm: float):
+    """Build the optax optimizer.
+
+    For memory_type='gru': single-group Adam (existing behavior).
+    For memory_type='urnn': per-dtype param groups — complex leaves get
+    ``complex_lr_or_schedule``, real leaves get ``lr_or_schedule``. One
+    global-norm clip wraps both, matching torch's clip_grad_norm_ +
+    per-group Adam (cleanrl/ppo_minigrid_urnn.py:243-248, 387-388).
+    Complex grads are conjugated first so the remainder of the chain
+    sees torch-convention descent directions.
+    """
+    if memory_type == 'urnn':
+        def label_fn(params):
+            return jax.tree_util.tree_map(
+                lambda p: 'complex' if jnp.iscomplexobj(p) else 'real',
+                params,
+            )
+        return optax.chain(
+            _conjugate_complex_grads(),
+            optax.clip_by_global_norm(max_grad_norm),
+            optax.multi_transform(
+                {'real':    optax.adam(lr_or_schedule,         eps=1e-5),
+                 'complex': optax.adam(complex_lr_or_schedule, eps=1e-5)},
+                label_fn,
+            ),
+        )
+    return optax.chain(
+        optax.clip_by_global_norm(max_grad_norm),
+        optax.adam(lr_or_schedule, eps=1e-5),
+    )
+
+
 def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
     num_updates = (
             args.total_steps // args.num_steps // args.num_envs
@@ -188,7 +246,12 @@ def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
                          hidden_size=args.hidden_size,
                          memoryless=memoryless,
                          is_discrete=is_discrete,
-                         is_image=is_image)
+                         is_image=is_image,
+                         memory_type=args.memory_type,
+                         urnn_variant=args.urnn_variant,
+                         urnn_input_dense=args.urnn_input_dense,
+                         urnn_norm_scale=args.urnn_norm_scale,
+                         urnn_perm_seed=args.urnn_perm_seed)
 
     steps_filter = partial(filter_period_first_dim, n=args.steps_log_freq)
     update_filter = partial(filter_period_first_dim, n=args.update_log_freq)
@@ -206,8 +269,8 @@ def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
                                   out_axes=2)
 
     def train(sweep_args_dict, rng):
-        lr, ld_weight, vf_coeff, lambda0, lambda1, entropy_coeff = \
-            sweep_args_dict['lr'], sweep_args_dict['ld_weight'], sweep_args_dict['vf_coeff'], \
+        lr, complex_lr, ld_weight, vf_coeff, lambda0, lambda1, entropy_coeff = \
+            sweep_args_dict['lr'], sweep_args_dict['complex_lr'], sweep_args_dict['ld_weight'], sweep_args_dict['vf_coeff'], \
                 sweep_args_dict['lambda0'], sweep_args_dict['lambda1'], sweep_args_dict['entropy_coeff']
 
         agent = PPO(network, double_critic=double_critic, ld_weight=ld_weight, vf_coeff=vf_coeff,
@@ -220,13 +283,15 @@ def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
         if double_critic:
             gae_lambda = jnp.array([lambda0, lambda1])
 
-        def linear_schedule(count):
-            frac = (
+        def _make_linear_schedule(base_lr):
+            def schedule(count):
+                frac = (
                     1.0
                     - (count // (args.num_minibatches * args.update_epochs))
                     / num_updates
-            )
-            return lr * frac
+                )
+                return base_lr * frac
+            return schedule
 
 
         # INIT NETWORK
@@ -235,18 +300,18 @@ def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
             env.dummy_observation(args.num_envs, env_params),
             jnp.zeros((1, args.num_envs)),
         )
-        init_hstate = ScannedRNN.initialize_carry(args.num_envs, args.hidden_size)
+        init_hstate = get_memory_initial_carry(
+            args.memory_type, args.num_envs, args.hidden_size, args.urnn_norm_scale
+        )
         network_params = agent.network.init(_rng, init_hstate, init_x)
         if args.anneal_lr:
-            tx = optax.chain(
-                optax.clip_by_global_norm(args.max_grad_norm),
-                optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            )
+            lr_sched = _make_linear_schedule(lr)
+            complex_lr_sched = _make_linear_schedule(complex_lr)
         else:
-            tx = optax.chain(
-                optax.clip_by_global_norm(args.max_grad_norm),
-                optax.adam(lr, eps=1e-5),
-            )
+            lr_sched = lr
+            complex_lr_sched = complex_lr
+        tx = _build_optimizer(args.memory_type, lr_sched, complex_lr_sched,
+                              args.max_grad_norm)
         train_state = TrainState.create(
             apply_fn=agent.network.apply,
             params=network_params,
@@ -257,14 +322,18 @@ def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
         rng, _rng = jax.random.split(rng)
         reset_rng = jax.random.split(_rng, args.num_envs)
         obsv, env_state = env.reset(reset_rng, env_params)
-        init_hstate = ScannedRNN.initialize_carry(args.num_envs, args.hidden_size)
+        init_hstate = get_memory_initial_carry(
+            args.memory_type, args.num_envs, args.hidden_size, args.urnn_norm_scale
+        )
 
         if args.env in ['craftax', 'craftax_pixels']:
             # We first need to populate our LogEnvState stats.
             rng, _rng = jax.random.split(rng)
             init_rng = jax.random.split(_rng, args.num_envs)
             init_obsv, init_env_state = env.reset(init_rng, env_params)
-            init_init_hstate = ScannedRNN.initialize_carry(args.num_envs, args.hidden_size)
+            init_init_hstate = get_memory_initial_carry(
+                args.memory_type, args.num_envs, args.hidden_size, args.urnn_norm_scale
+            )
 
             init_runner_state = (
                 train_state,
@@ -426,7 +495,9 @@ def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
         reset_rng = jax.random.split(runner_state[-1], args.num_envs)
         eval_obsv, eval_env_state = env.reset(reset_rng, env_params)
 
-        eval_init_hstate = ScannedRNN.initialize_carry(args.num_envs, args.hidden_size)
+        eval_init_hstate = get_memory_initial_carry(
+            args.memory_type, args.num_envs, args.hidden_size, args.urnn_norm_scale
+        )
 
         eval_runner_state = (
             final_train_state,

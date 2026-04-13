@@ -5,7 +5,7 @@ from jax._src.nn.initializers import orthogonal, constant
 from pobax.models.discrete import DiscreteActor
 from pobax.models.continuous import ContinuousActor
 from pobax.models.value import Critic
-from pobax.models.network import SimpleNN, ScannedRNN
+from pobax.models.network import SimpleNN, ScannedRNN, ScannedURNN
 from pobax.models.embedding import CNN, BattleshipEmbedding
 
 
@@ -17,6 +17,11 @@ class ActorCritic(nn.Module):
     memoryless: bool = False
     is_discrete: bool = True
     is_image: bool = False
+    memory_type: str = 'gru'
+    urnn_variant: str = 'standard'
+    urnn_input_dense: bool = True
+    urnn_norm_scale: float = 1.0
+    urnn_perm_seed: int = 0
 
     def setup(self):
         if self.is_image:
@@ -32,7 +37,16 @@ class ActorCritic(nn.Module):
             self.embedding = SimpleNN(hidden_size=self.hidden_size)
 
         if not self.memoryless:
-            self.memory = ScannedRNN(hidden_size=self.hidden_size)
+            if self.memory_type == 'urnn':
+                self.memory = ScannedURNN(
+                    hidden_size=self.hidden_size,
+                    variant=self.urnn_variant,
+                    add_input_dense=self.urnn_input_dense,
+                    norm_scale=self.urnn_norm_scale,
+                    perm_seed=self.urnn_perm_seed,
+                )
+            else:
+                self.memory = ScannedRNN(hidden_size=self.hidden_size)
         if self.is_discrete:
             self.actor = DiscreteActor(self.action_dim, hidden_size=self.hidden_size)
         else:
@@ -55,7 +69,13 @@ class ActorCritic(nn.Module):
         embedding = self.embedding(obs)
         if not self.memoryless:
             rnn_in = (embedding, dones)
-            hidden, embedding = self.memory(hidden, rnn_in)
+            hidden, mem_out = self.memory(hidden, rnn_in)
+            # QuRNN hook: a future --policy_head born flag will replace this
+            # real-concat adapter with a complex actor head.
+            if self.memory_type == 'urnn':
+                embedding = jnp.concatenate([mem_out.real, mem_out.imag], axis=-1)
+            else:
+                embedding = mem_out
 
         pi = self.actor(embedding, action_mask=action_mask)
         v = self.critic(embedding)

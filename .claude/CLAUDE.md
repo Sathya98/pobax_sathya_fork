@@ -4,6 +4,10 @@
 **Authors:** Ruo Yu (David) Tao, Kaicheng Guo, Cameron Allen, George Konidaris
 **OpenReview:** https://openreview.net/forum?id=HUTCbYOW5E
 
+## Environment
+
+ALWAYS use the uv venv at `~/qrl_env` for any Python execution in this repo — running code, installing packages, tests, experiments. Activate with `source ~/qrl_env/bin/activate` (or prefix commands with it in non-interactive shells). Install new deps via `uv pip install ...` inside this env. Do NOT create a new venv, do NOT use the system python, and do NOT use any other env name. The installed package is `pobax` (not `pobax`).
+
 ## What This Repo Is
 
 A JAX-native POMDP benchmark suite designed to test whether memory architectures actually help in RL. All environments are curated to be "memory-improvable" — a memoryless policy provably cannot match a memory-augmented one.
@@ -20,7 +24,7 @@ A JAX-native POMDP benchmark suite designed to test whether memory architectures
 ## Directory Structure
 
 ```
-posebax/
+pobax/
   config.py              # All hyperparameters (PPOHyperparams class via TAP)
   definitions.py         # Project root path definitions
   algos/
@@ -135,11 +139,55 @@ Repeat for num_updates
 
 ## Implemented Methods
 
-1. **Recurrent PPO** (GRU memory) — `python -m posebax.algos.ppo`
-2. **GTrXL PPO** (Gated Transformer-XL) — `python -m posebax.algos.transformer_xl`
-3. **Lambda-discrepancy** — dual critic with different GAE lambdas: `--double_critic --ld_weight 0.1`
-4. **Memoryless baseline** — `--memoryless`
-5. **Perfect memory baseline** — `--perfect_memory` (fully observable)
+1. **Recurrent PPO** (GRU memory) — `python -m pobax.algos.ppo`
+2. **GTrXL PPO** (Gated Transformer-XL) — `python -m pobax.algos.transformer_xl`
+3. **Unitary RNN (uRNN)** — drop-in complex-valued memory: `--memory_type urnn` (see section below)
+4. **Lambda-discrepancy** — dual critic with different GAE lambdas: `--double_critic --ld_weight 0.1`
+5. **Memoryless baseline** — `--memoryless`
+6. **Perfect memory baseline** — `--perfect_memory` (fully observable)
+
+### uRNN details
+
+Port of `cleanrl_qrl_fork/cleanrl/urnn.py` (Arjovsky et al., W = D₃ R₂ F⁻¹ D₂ Π R₁ F D₁).
+Lives in `pobax/models/network.py` as `URNNCell` / `LegacyURNNCell` wrapped by
+`ScannedURNN`. Activated with `--memory_type urnn`; ignored otherwise.
+
+- **Carry dtype**: `complex64`, shape `(num_envs, hidden_size)`. The scan output
+  is the complex carry itself; the real-concat adapter
+  `jnp.concatenate([h.real, h.imag], -1)` lives in `ActorCritic.__call__`
+  (models/actor_critic.py), so downstream actor/critic Dense layers auto-adapt
+  to `2*hidden_size` input features.
+- **Two variants**: `--urnn_variant standard` (default; input-dependent
+  D/R via Dense projections) or `legacy` (learnable-fixed D/R).
+- **Other uRNN flags**: `--urnn_input_dense` (default True; adds a complex
+  input projection each step, standard variant only), `--urnn_norm_scale`
+  (default 1.0; scales the initial equal-superposition carry), `--urnn_perm_seed`
+  (default 0; seeds the fixed permutation inside the unitary transform).
+- **Dual-LR optimizer**: when `memory_type='urnn'`, `pobax/algos/ppo.py`'s
+  `_build_optimizer` splits params by dtype — complex leaves use
+  `--complex_lr` (default `[8e-5]`, matches torch), real leaves use `--lr`.
+  Both schedules anneal linearly when `--anneal_lr` is on. A single
+  `optax.clip_by_global_norm` wraps both groups — verified to handle
+  complex grads correctly via `optax.global_norm`.
+- **Initial carry**: `(√(norm_scale/(2H)) + i·√(norm_scale/(2H)))·1`, reset
+  at every episode boundary via the `resets` flag inside the scan.
+- **Only supports discrete action spaces** at present — the continuous actor
+  path is untouched.
+
+Example:
+```bash
+python -m pobax.algos.ppo --env tmaze_5 --memory_type urnn --platform gpu --n_seeds 5
+python -m pobax.algos.ppo --env rocksample_11_11 --memory_type urnn --urnn_variant legacy
+python -m pobax.algos.ppo --env tmaze_5 --memory_type urnn --lr 2.5e-4 1e-4 --complex_lr 8e-5 5e-5  # sweep both LRs
+```
+
+**QuRNN follow-up (deferred)**: the extended cleanrl variant
+`ppo_minigrid_qurnn.py` uses a complex-valued actor head with Born-rule logits
+(`log(|W h|² + ε)`). It will be added in a follow-up PR once plain uRNN is
+convergence-verified on the core POMDPs. The hook point is the
+`if self.memory_type == 'urnn': embedding = jnp.concatenate([mem_out.real, mem_out.imag], ...)`
+branch in `pobax/models/actor_critic.py` — a future `--policy_head born` flag
+will swap the real-concat adapter for a complex actor head.
 
 ## Environments
 
@@ -162,19 +210,19 @@ All discrete action spaces unless noted:
 
 ```bash
 # Basic recurrent PPO
-python -m posebax.algos.ppo --env tmaze_5 --hidden_size 128 --platform gpu --n_seeds 5
+python -m pobax.algos.ppo --env tmaze_5 --hidden_size 128 --platform gpu --n_seeds 5
 
 # GTrXL
-python -m posebax.algos.transformer_xl --env rocksample_11_11 --platform gpu
+python -m pobax.algos.transformer_xl --env rocksample_11_11 --platform gpu
 
 # With lambda-discrepancy
-python -m posebax.algos.ppo --env battleship --double_critic --ld_weight 0.1
+python -m pobax.algos.ppo --env battleship --double_critic --ld_weight 0.1
 
 # Memoryless baseline
-python -m posebax.algos.ppo --env tmaze_5 --memoryless
+python -m pobax.algos.ppo --env tmaze_5 --memoryless
 
 # Hyperparameter sweep (grid search over list-valued args)
-python -m posebax.algos.ppo --env tmaze_5 --lr 0.001 0.0001 --lambda0 0.9 0.95
+python -m pobax.algos.ppo --env tmaze_5 --lr 0.001 0.0001 --lambda0 0.9 0.95
 ```
 
 Best hyperparameters for each environment are in `scripts/hyperparams/<env>/best/`.
@@ -195,6 +243,12 @@ Best hyperparameters for each environment are in `scripts/hyperparams/<env>/best
 | `ld_weight` | [0.0] | Lambda-discrepancy loss weight |
 | `clip_eps` | 0.2 | PPO clip epsilon |
 | `entropy_coeff` | [0.01] | Entropy bonus weight |
+| `memory_type` | `'gru'` | Memory module: `'gru'` or `'urnn'` |
+| `urnn_variant` | `'standard'` | uRNN cell flavor: `'standard'` or `'legacy'` |
+| `urnn_input_dense` | True | Add complex input-embed inside uRNN (standard only) |
+| `urnn_norm_scale` | 1.0 | Scales the initial complex carry |
+| `urnn_perm_seed` | 0 | Seed for uRNN fixed permutation |
+| `complex_lr` | [8e-5] | LR for complex params under `memory_type='urnn'` |
 | `n_seeds` | 5 | Seeds per config |
 | `total_steps` | 1.5e6 | Total environment steps |
 
@@ -208,6 +262,6 @@ Best hyperparameters for each environment are in `scripts/hyperparams/<env>/best
 5. Training loop, GAE, evaluation — all untouched
 
 ### Adding a new environment
-1. Implement as a `gymnax.Environment` subclass in `posebax/envs/jax/`
-2. Register in `get_env()` in `posebax/envs/__init__.py`
+1. Implement as a `gymnax.Environment` subclass in `pobax/envs/jax/`
+2. Register in `get_env()` in `pobax/envs/__init__.py`
 3. Add hyperparameter configs in `scripts/hyperparams/<env>/`
