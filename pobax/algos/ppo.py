@@ -187,14 +187,14 @@ def _build_optimizer(memory_type: str, lr_or_schedule, complex_lr_or_schedule,
     """Build the optax optimizer.
 
     For memory_type='gru': single-group Adam (existing behavior).
-    For memory_type='urnn': per-dtype param groups — complex leaves get
-    ``complex_lr_or_schedule``, real leaves get ``lr_or_schedule``. One
-    global-norm clip wraps both, matching torch's clip_grad_norm_ +
-    per-group Adam (cleanrl/ppo_minigrid_urnn.py:243-248, 387-388).
-    Complex grads are conjugated first so the remainder of the chain
-    sees torch-convention descent directions.
+    For memory_type in {'urnn','eunn'}: per-dtype param groups — complex
+    leaves get ``complex_lr_or_schedule``, real leaves get
+    ``lr_or_schedule``. One global-norm clip wraps both, matching torch's
+    clip_grad_norm_ + per-group Adam (cleanrl/ppo_minigrid_urnn.py:243-248,
+    387-388). Complex grads are conjugated first so the remainder of the
+    chain sees torch-convention descent directions.
     """
-    if memory_type == 'urnn':
+    if memory_type in ('urnn', 'eunn'):
         def label_fn(params):
             return jax.tree_util.tree_map(
                 lambda p: 'complex' if jnp.iscomplexobj(p) else 'real',
@@ -251,7 +251,8 @@ def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
                          urnn_variant=args.urnn_variant,
                          urnn_input_dense=args.urnn_input_dense,
                          urnn_norm_scale=args.urnn_norm_scale,
-                         urnn_perm_seed=args.urnn_perm_seed)
+                         urnn_perm_seed=args.urnn_perm_seed,
+                         eunn_capacity=args.eunn_capacity)
 
     steps_filter = partial(filter_period_first_dim, n=args.steps_log_freq)
     update_filter = partial(filter_period_first_dim, n=args.update_log_freq)
@@ -446,6 +447,14 @@ def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
             # save metrics only every steps_log_freq
             metric = traj_batch.info
             metric = jax.tree.map(steps_filter, metric)
+
+            # training stats: loss_info is (total_loss, (value_loss, actor_loss, entropy)),
+            # each with leading dims (update_epochs, num_minibatches) from the
+            # inner scan. Collapse those two axes to get one scalar per update.
+            _, (value_loss_info, actor_loss_info, entropy_info) = loss_info
+            metric['policy_entropy'] = entropy_info.mean(axis=(-2, -1))
+            metric['value_loss'] = value_loss_info.mean(axis=(-2, -1))
+            metric['actor_loss'] = actor_loss_info.mean(axis=(-2, -1))
 
             rng = update_state[-1]
             if args.debug:

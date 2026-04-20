@@ -241,12 +241,33 @@ def householder_matrix(v: jnp.ndarray) -> jnp.ndarray:
 
     v: (..., H) complex, already unit-norm.
     Returns: (..., H, H) complex unitary.
+
+    No longer called from the uRNN cells (they use
+    ``_apply_factored_householder`` below). Retained as the materialized
+    reference in ``tests/test_householder_factored.py``.
     """
     v_col = v[..., :, None]                   # (..., H, 1)
     v_dag = jnp.conj(v)[..., None, :]         # (..., 1, H)
     H = v.shape[-1]
     eye = jnp.eye(H, dtype=v.dtype)
     return eye - 2.0 * (v_col @ v_dag)
+
+
+def _apply_factored_householder(v: jnp.ndarray, h: jnp.ndarray) -> jnp.ndarray:
+    """Apply (I - 2 v v^H) h without materializing the (H, H) matrix.
+
+    By associativity, (I - 2 v v^H) h = h - 2 v (v^H h). The factored form
+    costs O(H) FLOPs and O(H) activation tape per call, vs O(H^2) for the
+    materialized path. Forward + backward both drop by the same factor —
+    see ``tests/test_householder_factored.py`` for equivalence and gradient
+    checks.
+
+    v must be unit-norm along the last axis (use ``complex_unit_norm`` on
+    the raw rotation vector first). Shapes broadcast normally, so a shared
+    ``(H,)`` v applied to ``(batch, H)`` h works via ``v[None, :]``.
+    """
+    vh_h = jnp.sum(jnp.conj(v) * h, axis=-1, keepdims=True)
+    return h - 2.0 * v * vh_h
 
 
 class ModReLU(nn.Module):
@@ -303,14 +324,21 @@ class URNNCell(nn.Module):
                               kernel_init=_glorot_complex(),
                               name='rot_embed')(ins_c)
         r1, r2 = jnp.split(rot_params, 2, axis=-1)
-        R1 = householder_matrix(complex_unit_norm(r1))
-        R2 = householder_matrix(complex_unit_norm(r2))
+        v1 = complex_unit_norm(r1)
+        v2 = complex_unit_norm(r2)
+        # OLD (materialized (batch, H, H) complex reflection matrices — OOMs at
+        # H=512 on a 24 GB GPU for battleship_10 / Navix-01). Equivalent to the
+        # factored left-action calls below; see tests/test_householder_factored.py.
+        # R1 = householder_matrix(v1)
+        # R2 = householder_matrix(v2)
 
         # W = D3 R2 F^-1 D2 Pi R1 F D1
         h = jnp.fft.fft(d1 * h, axis=-1)
-        h = jnp.einsum('bij,bj->bi', R1, h)
+        # h = jnp.einsum('bij,bj->bi', R1, h)
+        h = _apply_factored_householder(v1, h)
         h = jnp.fft.ifft(d2 * h[:, perm], axis=-1)
-        h = d3 * jnp.einsum('bij,bj->bi', R2, h)
+        # h = d3 * jnp.einsum('bij,bj->bi', R2, h)
+        h = d3 * _apply_factored_householder(v2, h)
 
         if self.add_input_dense:
             h = h + nn.Dense(features=self.hidden_size, use_bias=False,
@@ -351,13 +379,22 @@ class LegacyURNNCell(nn.Module):
 
         d1, d2, d3 = jnp.split(diag, 3, axis=-1)
         r1, r2 = jnp.split(rotation, 2, axis=-1)
-        R1 = householder_matrix(complex_unit_norm(r1))   # (H, H)
-        R2 = householder_matrix(complex_unit_norm(r2))
+        v1 = complex_unit_norm(r1)
+        v2 = complex_unit_norm(r2)
+        # OLD (materialized (H, H) R + right action h @ R). Note: cleanrl's
+        # torch LegacyURNN uses h @ R, but that reflects along conj(v), not v,
+        # for complex v — deliberate switch to left action here so both cells
+        # agree with the paper's W h convention. This changes trained behavior
+        # vs the pre-rewrite legacy checkpoints.
+        # R1 = householder_matrix(v1)   # (H, H)
+        # R2 = householder_matrix(v2)
 
         h = jnp.fft.fft(d1[None, :] * h, axis=-1)
-        h = h @ R1
+        # h = h @ R1
+        h = _apply_factored_householder(v1[None, :], h)
         h = jnp.fft.ifft(d2[None, :] * h[:, perm], axis=-1)
-        h = d3[None, :] * (h @ R2)
+        # h = d3[None, :] * (h @ R2)
+        h = d3[None, :] * _apply_factored_householder(v2[None, :], h)
 
         h = h + nn.Dense(features=self.hidden_size, use_bias=False,
                          param_dtype=jnp.complex64,
@@ -365,6 +402,84 @@ class LegacyURNNCell(nn.Module):
                          name='input_embed')(ins.astype(jnp.complex64))
 
         return ModReLU(hidden_size=self.hidden_size, name='activation')(h)
+
+
+class EUNNCell(nn.Module):
+    """Single step of the tunable EUNN (Jing et al. 2017, arXiv:1612.05231).
+
+    W = D * F_L * ... * F_1, where each F_k is a block-diagonal matrix of
+    H/2 independent 2x2 unitary mixing units. L=H gives full U(H)
+    coverage; smaller L gives a progressively restricted subspace. Layer
+    composition uses jax.lax.scan (O(1) trace size in L).
+
+    Parameters (all real-valued angles; complex action on the complex carry):
+      - angles: (H, L) real. Even rows along axis 0 are phi (per-pair
+        phase), odd rows are theta (per-pair rotation angle).
+      - diag:   (H,) real. Final diagonal phase D applied as
+        h * exp(1j * D) — same parameterization as d1/d2/d3 in
+        LegacyURNNCell.
+      - input_embed: complex Dense (matches LegacyURNNCell convention).
+    """
+
+    hidden_size: int
+    capacity: int
+
+    def _init_angles(self, key, shape, dtype):
+        return jax.random.uniform(key, shape, jnp.float32, 0.0,
+                                  2 * jnp.pi).astype(dtype)
+
+    @staticmethod
+    def _apply_unitary(angles: jnp.ndarray, diag: jnp.ndarray,
+                       h: jnp.ndarray) -> jnp.ndarray:
+        """Apply W = D * F_L * ... * F_1 to h.
+
+        angles: (H, L) real; diag: (H,) real; h: (batch, H) complex.
+        Returns (batch, H) complex. Exposed as staticmethod so unit tests
+        can materialize U by feeding in the identity without module init.
+        """
+        H, L = angles.shape
+        angles_LH = angles.T                                           # (L, H)
+        roll_shifts = (2 * (jnp.arange(L) % 2) - 1).astype(jnp.int32)  # (L,) ±1
+
+        def body(h_carry, layer_input):
+            ang_L, shift = layer_input
+            phi = ang_L[0::2]                                          # (H/2,)
+            theta = ang_L[1::2]                                        # (H/2,)
+
+            h_even = h_carry[:, 0::2]                                  # (batch, H/2)
+            h_odd = h_carry[:, 1::2]
+            e_iphi = jnp.exp(1j * phi).astype(h_carry.dtype)
+            cos_t, sin_t = jnp.cos(theta), jnp.sin(theta)
+
+            new_even = e_iphi * (cos_t * h_even - sin_t * h_odd)
+            new_odd = sin_t * h_even + cos_t * h_odd
+
+            # Re-interleave [even[0], odd[0], even[1], odd[1], ...]
+            h_new = jnp.stack([new_even, new_odd], axis=-1).reshape(-1, H)
+            # Alternate pair structure between layers via cyclic ±1 roll.
+            h_new = jnp.roll(h_new, shift=shift, axis=-1)
+            return h_new, None
+
+        h, _ = jax.lax.scan(body, h, (angles_LH, roll_shifts))
+        return h * jnp.exp(1j * diag).astype(h.dtype)
+
+    @nn.compact
+    def __call__(self, h: jnp.ndarray, ins: jnp.ndarray) -> jnp.ndarray:
+        H, L = self.hidden_size, self.capacity
+        if H % 2 != 0:
+            raise ValueError(f'EUNN requires even hidden_size, got {H}')
+
+        angles = self.param('angles', self._init_angles, (H, L), jnp.float32)
+        diag = self.param('diag', self._init_angles, (H,), jnp.float32)
+
+        h = self._apply_unitary(angles, diag, h)
+
+        h = h + nn.Dense(features=H, use_bias=False,
+                         param_dtype=jnp.complex64,
+                         kernel_init=_glorot_complex(),
+                         name='input_embed')(ins.astype(jnp.complex64))
+
+        return ModReLU(hidden_size=H, name='activation')(h)
 
 
 class ScannedURNN(nn.Module):
@@ -380,10 +495,11 @@ class ScannedURNN(nn.Module):
     """
 
     hidden_size: int
-    variant: Literal['standard', 'legacy'] = 'standard'
+    variant: Literal['standard', 'legacy', 'eunn'] = 'standard'
     add_input_dense: bool = True
     norm_scale: float = 1.0
     perm_seed: int = 0
+    capacity: int = 2                     # [EUNN] L; ignored by other variants.
 
     @functools.partial(
         nn.scan,
@@ -409,6 +525,10 @@ class ScannedURNN(nn.Module):
         if self.variant == 'legacy':
             new_h = LegacyURNNCell(hidden_size=self.hidden_size,
                                    name='cell')(rnn_state, ins, perm)
+        elif self.variant == 'eunn':
+            new_h = EUNNCell(hidden_size=self.hidden_size,
+                             capacity=self.capacity,
+                             name='cell')(rnn_state, ins)
         else:
             new_h = URNNCell(hidden_size=self.hidden_size,
                              add_input_dense=self.add_input_dense,
@@ -425,6 +545,6 @@ def get_memory_initial_carry(memory_type: str, batch_size: int,
                              hidden_size: int,
                              norm_scale: float = 1.0) -> jnp.ndarray:
     """Dispatch initial carry so ppo.py doesn't branch at the call site."""
-    if memory_type == 'urnn':
+    if memory_type in ('urnn', 'eunn'):
         return initial_urnn_carry(batch_size, hidden_size, norm_scale)
     return ScannedRNN.initialize_carry(batch_size, hidden_size)

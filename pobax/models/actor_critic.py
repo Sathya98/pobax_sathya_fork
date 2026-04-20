@@ -22,6 +22,7 @@ class ActorCritic(nn.Module):
     urnn_input_dense: bool = True
     urnn_norm_scale: float = 1.0
     urnn_perm_seed: int = 0
+    eunn_capacity: int = 2
 
     def setup(self):
         if self.is_image:
@@ -44,6 +45,13 @@ class ActorCritic(nn.Module):
                     add_input_dense=self.urnn_input_dense,
                     norm_scale=self.urnn_norm_scale,
                     perm_seed=self.urnn_perm_seed,
+                )
+            elif self.memory_type == 'eunn':
+                self.memory = ScannedURNN(
+                    hidden_size=self.hidden_size,
+                    variant='eunn',
+                    norm_scale=self.urnn_norm_scale,
+                    capacity=self.eunn_capacity,
                 )
             else:
                 self.memory = ScannedRNN(hidden_size=self.hidden_size)
@@ -72,7 +80,7 @@ class ActorCritic(nn.Module):
             hidden, mem_out = self.memory(hidden, rnn_in)
             # QuRNN hook: a future --policy_head born flag will replace this
             # real-concat adapter with a complex actor head.
-            if self.memory_type == 'urnn':
+            if self.memory_type in ('urnn', 'eunn'):
                 embedding = jnp.concatenate([mem_out.real, mem_out.imag], axis=-1)
             else:
                 embedding = mem_out

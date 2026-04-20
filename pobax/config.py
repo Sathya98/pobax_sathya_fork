@@ -40,20 +40,22 @@ class PPOHyperparams(Tap):
     action_concat: bool = False  # Do we concatenate actions to our observation?
 
     # Memory module selection. 'urnn' = unitary RNN (complex hidden state).
-    memory_type: Literal['gru', 'urnn'] = 'gru'
+    # 'eunn' = tunable EUNN (Jing et al. 2017, arXiv:1612.05231).
+    memory_type: Literal['gru', 'urnn', 'eunn'] = 'gru'
     urnn_variant: Literal['standard', 'legacy'] = 'standard'  # 'standard' = input-dependent d/R, 'legacy' = learnable.
     urnn_input_dense: bool = True  # Add complex input-embed to the hidden state each step (standard variant only).
-    urnn_norm_scale: float = 1.0   # Scales the initial complex carry.
-    urnn_perm_seed: int = 0        # Seed for the fixed permutation inside the unitary transform.
+    urnn_norm_scale: float = 1.0   # Scales the initial complex carry (shared by urnn + eunn).
+    urnn_perm_seed: int = 0        # Seed for the fixed permutation inside the uRNN unitary transform (uRNN only; EUNN uses alternating cyclic shifts).
 
     # Below are hyperparameters that can be swept with jax.vmap.
-    lr: list[float] = [2.5e-4]  # Learning rate (applies to all real params; for uRNN, applies only to the real group).
-    complex_lr: list[float] = [8e-5]  # LR for the complex param group under memory_type='urnn'. Ignored otherwise.
+    lr: list[float] = [2.5e-4]  # Learning rate (applies to all real params; for uRNN/EUNN, applies only to the real group).
+    complex_lr: list[float] = [8e-5]  # LR for the complex param group under memory_type in {'urnn','eunn'}. Ignored otherwise.
     lambda0: list[float] = [0.95]  # GAE lambda_0
     lambda1: list[float] = [0.5]  # GAE lambda_1
     ld_weight: list[float] = [0.0]  # How much to we weight the LD loss? only applies when double_critic is True.
     vf_coeff: list[float] = [0.5]  # How much do we weight value loss?
     entropy_coeff: list[float] = [0.01]  # PPO policy entropy coefficient for exploration
+    eunn_capacity: int = 2  # [EUNN] capacity L. Determines tensor shapes so not vmap-sweepable; sweep via separate runs. L=hidden_size gives full U(H).
 
     hidden_size: int = 128  # Hidden size of our neural net
     total_steps: int = int(1.5e6)  # How many training steps do we run?

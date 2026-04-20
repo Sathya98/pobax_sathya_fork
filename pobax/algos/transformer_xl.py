@@ -372,6 +372,11 @@ def make_train(args: TransformerHyperparams, rand_key: jax.random.PRNGKey):
             metric = traj_batch.info
             metric = jax.tree.map(steps_filter, metric)
 
+            _, (value_loss_info, actor_loss_info, entropy_info) = loss_info
+            metric['policy_entropy'] = entropy_info.mean(axis=(-2, -1))
+            metric['value_loss'] = value_loss_info.mean(axis=(-2, -1))
+            metric['actor_loss'] = actor_loss_info.mean(axis=(-2, -1))
+
             train_state = update_state[0]
             rng = update_state[-1]
             if args.debug:
