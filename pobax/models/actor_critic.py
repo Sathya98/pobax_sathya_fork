@@ -2,7 +2,7 @@ from flax import linen as nn
 from jax import numpy as jnp
 from jax._src.nn.initializers import orthogonal, constant
 
-from pobax.models.discrete import DiscreteActor
+from pobax.models.discrete import DiscreteActor, BornRuleActor
 from pobax.models.continuous import ContinuousActor
 from pobax.models.value import Critic
 from pobax.models.network import SimpleNN, ScannedRNN, ScannedURNN
@@ -23,8 +23,11 @@ class ActorCritic(nn.Module):
     urnn_norm_scale: float = 1.0
     urnn_perm_seed: int = 0
     eunn_capacity: int = 2
+    policy_head: str = 'standard'
 
     def setup(self):
+        if self.policy_head == 'born' and not self.is_discrete:
+            raise ValueError("policy_head='born' only supports discrete action spaces")
         if self.is_image:
             self.embedding = CNN(hidden_size=self.hidden_size)
         # elif 'battleship' in self.env_name:
@@ -55,7 +58,9 @@ class ActorCritic(nn.Module):
                 )
             else:
                 self.memory = ScannedRNN(hidden_size=self.hidden_size)
-        if self.is_discrete:
+        if self.policy_head == 'born':
+            self.actor = BornRuleActor(self.action_dim, hidden_size=self.hidden_size)
+        elif self.is_discrete:
             self.actor = DiscreteActor(self.action_dim, hidden_size=self.hidden_size)
         else:
             self.actor = ContinuousActor(self.action_dim, hidden_size=self.hidden_size)
@@ -78,14 +83,17 @@ class ActorCritic(nn.Module):
         if not self.memoryless:
             rnn_in = (embedding, dones)
             hidden, mem_out = self.memory(hidden, rnn_in)
-            # QuRNN hook: a future --policy_head born flag will replace this
-            # real-concat adapter with a complex actor head.
             if self.memory_type in ('urnn', 'eunn'):
-                embedding = jnp.concatenate([mem_out.real, mem_out.imag], axis=-1)
+                critic_embedding = jnp.concatenate([mem_out.real, mem_out.imag], axis=-1)
+                actor_input = mem_out if self.policy_head == 'born' else critic_embedding
             else:
-                embedding = mem_out
+                actor_input = mem_out
+                critic_embedding = mem_out
+        else:
+            actor_input = embedding
+            critic_embedding = embedding
 
-        pi = self.actor(embedding, action_mask=action_mask)
-        v = self.critic(embedding)
+        pi = self.actor(actor_input, action_mask=action_mask)
+        v = self.critic(critic_embedding)
 
         return hidden, pi, jnp.squeeze(v, axis=-1)

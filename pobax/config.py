@@ -46,6 +46,7 @@ class PPOHyperparams(Tap):
     urnn_input_dense: bool = True  # Add complex input-embed to the hidden state each step (standard variant only).
     urnn_norm_scale: float = 1.0   # Scales the initial complex carry (shared by urnn + eunn).
     urnn_perm_seed: int = 0        # Seed for the fixed permutation inside the uRNN unitary transform (uRNN only; EUNN uses alternating cyclic shifts).
+    policy_head: Literal['standard', 'born'] = 'standard'  # 'born' = Born-rule complex actor (requires urnn/eunn, discrete actions).
 
     # Below are hyperparameters that can be swept with jax.vmap.
     lr: list[float] = [2.5e-4]  # Learning rate (applies to all real params; for uRNN/EUNN, applies only to the real group).
@@ -86,6 +87,14 @@ class PPOHyperparams(Tap):
         # Validate n_run_bins and run_bin_idx
         if self.n_run_bins is not None:
             assert self.run_bin_idx is not None
+        if self.policy_head == 'born':
+            if self.memory_type not in ('urnn', 'eunn'):
+                raise ValueError(
+                    f"policy_head='born' requires memory_type in {{'urnn','eunn'}}, "
+                    f"got '{self.memory_type}'"
+                )
+            if self.memoryless:
+                raise ValueError("policy_head='born' is incompatible with memoryless=True")
 
 
 class DQNHyperparams(Tap):

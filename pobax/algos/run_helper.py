@@ -25,7 +25,7 @@ def vmap_and_train(args: Hyperparams,
 
     new_t = time()
     total_runtime = new_t - t
-    print('Total runtime:', total_runtime)
+    print(f'Training complete. Total runtime: {total_runtime:.1f}s', flush=True)
 
     # our final_eval_metric returns max_num_steps.
     # we can filter that down by the max episode length amongst the runs.
@@ -53,6 +53,6 @@ def vmap_and_train(args: Hyperparams,
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     save_args = orbax_utils.save_args_from_target(all_results)
 
-    print(f"Saving results to {results_path}")
+    print(f"Saving results to {results_path}", flush=True)
     orbax_checkpointer.save(results_path, all_results, save_args=save_args)
-    print("Done.")
+    print("Save complete.", flush=True)

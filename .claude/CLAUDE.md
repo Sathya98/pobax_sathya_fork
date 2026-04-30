@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # POBax - Partial Observability Benchmarks in JAX
 
 **Paper:** "Benchmarking Partial Observability in Reinforcement Learning with a Suite of Memory-Improvable Domains" (RLC 2025)
@@ -6,7 +10,29 @@
 
 ## Environment
 
-ALWAYS use the uv venv at `~/qrl_env` for any Python execution in this repo — running code, installing packages, tests, experiments. Activate with `source ~/qrl_env/bin/activate` (or prefix commands with it in non-interactive shells). Install new deps via `uv pip install ...` inside this env. Do NOT create a new venv, do NOT use the system python, and do NOT use any other env name. The installed package is `pobax` (not `pobax`).
+ALWAYS use the uv venv at `~/qrl_env` for any Python execution in this repo — running code, installing packages, tests, experiments. Activate with `source ~/qrl_env/bin/activate` (or prefix commands with it in non-interactive shells). Install new deps via `uv pip install ...` inside this env. Do NOT create a new venv, do NOT use the system python, and do NOT use any other env name. The installed package is `pobax`.
+
+## Commands
+
+```bash
+# Run tests
+source ~/qrl_env/bin/activate && python -m pytest tests/ -v
+
+# Run a single test file
+python -m pytest tests/test_born_rule_actor.py -v
+
+# Run a specific test
+python -m pytest tests/test_eunn.py::test_unitarity_f64 -v
+
+# Quick training smoke test (CPU, ~20s)
+python -m pobax.algos.ppo --env tmaze_10 --memory_type urnn --hidden_size 32 \
+    --num_envs 4 --total_steps 100000 --platform cpu --n_seeds 1
+
+# SLURM batch submission (from login node)
+./submit_pobax.sh                          # full matrix
+DRY_RUN=1 ./submit_pobax.sh               # print commands only
+METHODS="eunn_2" ENVS="tmaze_10" SMOKE=1 ./submit_pobax.sh  # smoke run
+```
 
 ## What This Repo Is
 
@@ -33,11 +59,11 @@ pobax/
     run_helper.py        # Training utilities (logging, checkpointing)
   models/
     actor_critic.py      # ActorCritic module — composes embedding + memory + heads
-    network.py           # ScannedRNN (GRU), CNN, SimpleNN, SmallImageCNN, FullImageCNN
-    discrete.py          # DiscreteActor, DiscreteActorCriticTransformer
+    network.py           # ScannedRNN (GRU), ScannedURNN, URNNCell, LegacyURNNCell, EUNNCell, ModReLU
+    discrete.py          # DiscreteActor, BornRuleActor, DiscreteActorCriticTransformer
     continuous.py        # ContinuousActor
     value.py             # Critic (value function head)
-    embedding.py         # Embedding/preprocessing networks
+    embedding.py         # Embedding/preprocessing networks (CNN, SimpleNN)
     transformerXL.py     # Transformer-XL with relative positional attention
     rel_multi_head.py    # Relative multi-head attention
     __init__.py          # Network factory functions
@@ -58,7 +84,7 @@ pobax/
       gymnasium.py       # Gymnasium compatibility wrapper
       nx.py              # Navix compatibility wrapper
       observation.py     # Observation transformations
-      pixel.py           # Pixel rendering wrapper
+      pixel.py           # Pixel rendering wrapper (incl. craftax 10px→3px downscale)
     configs/             # Per-environment YAML configs
   utils/
     sweep.py             # Hyperparameter sweep logic (grid/random)
@@ -66,16 +92,17 @@ pobax/
     plot.py              # Plotting
     video.py             # Video recording
     grid.py              # Grid utilities
+tests/
+  test_born_rule_actor.py  # BornRuleActor: shapes, masking, gradients, integration
+  test_eunn.py             # EUNNCell unitarity, gradients, shapes
+  test_scanned_urnn.py     # ScannedURNN: dtypes, resets, Wirtinger gradients
+  test_battleship.py       # Battleship env
+  test_rocksample.py       # RockSample env
+  ...
+run_pobax.sbatch         # SLURM job script — runs one (method, env) combo
+submit_pobax.sh          # Submits the full (method × env) matrix via sbatch
 scripts/
   hyperparams/           # Tuned hyperparams per environment
-    rocksample/best/     # Best configs for RockSample
-    tmaze/best/
-    battleship/best/
-    navix/best/
-    masked_mujoco/best/
-    visual_mujoco/
-    craftax/
-    pocman/best/
   baselines/             # Baseline experiment scripts
   launching/             # SLURM/Onager job submission
   visualizations/        # Plotting scripts
@@ -86,29 +113,30 @@ scripts/
 ### Network Pipeline
 
 ```
-Observation -> Embedding -> [ScannedRNN] -> Actor Head -> Action Distribution
-                                         -> Critic Head -> Value
+                                              ┌─ Actor Head ──→ Action Distribution
+Observation → Embedding → [Memory module] ──→ │
+                                              └─ Critic Head ─→ Value
+```
+
+For uRNN/EUNN with `--policy_head born`, the actor/critic paths split:
+```
+mem_out (complex64)
+    ├── BornRuleActor: complex Dense(H→A) → log(|z|²+ε) → Categorical
+    └── concat [h.real, h.imag] → Critic (real, 2H→H→1)
 ```
 
 The `ActorCritic` module in `models/actor_critic.py` composes these:
-- `embedding`: `nn.Dense` (vector obs) or `CNN`/`SmallImageCNN`/`FullImageCNN` (pixel obs)
-- `memory`: `ScannedRNN` (GRU-based) — omitted if `--memoryless`
-- `actor`: `DiscreteActor` or `ContinuousActor`
+- `embedding`: `nn.Dense` (vector obs) or `CNN` (pixel obs)
+- `memory`: `ScannedRNN` (GRU), `ScannedURNN` (uRNN/EUNN) — omitted if `--memoryless`
+- `actor`: `DiscreteActor`, `BornRuleActor` (Born-rule), or `ContinuousActor`
 - `critic`: `Critic` (single or double for lambda-discrepancy)
 
-### ScannedRNN (models/network.py)
+### Memory Modules (models/network.py)
 
-The core recurrent module. Uses `nn.scan` to unroll over time axis:
-```python
-class ScannedRNN(nn.Module):
-    hidden_size: int
-    # Uses nn.scan with variable_broadcast="params", in_axes=0, out_axes=0
-    # Input: (ins, resets) — resets flags trigger hidden state zeroing at episode boundaries
-    # Cell: nn.GRUCell(features=self.hidden_size) — hardcoded to GRU
-    # Returns: (new_rnn_state, y)
-```
-
-**Important:** The cell is hardcoded to GRU. To add a new cell type, modify this class.
+Two scanned wrappers, both using `nn.scan` to unroll over time axis:
+- `ScannedRNN`: hardcoded GRU cell (`nn.GRUCell`). Carry is float32.
+- `ScannedURNN`: wraps `URNNCell`, `LegacyURNNCell`, or `EUNNCell` (selected by `variant`).
+  Carry is complex64. Episode resets via `jnp.where` against `initial_urnn_carry`.
 
 ### Hidden State Flow Through Training
 
@@ -142,9 +170,11 @@ Repeat for num_updates
 1. **Recurrent PPO** (GRU memory) — `python -m pobax.algos.ppo`
 2. **GTrXL PPO** (Gated Transformer-XL) — `python -m pobax.algos.transformer_xl`
 3. **Unitary RNN (uRNN)** — drop-in complex-valued memory: `--memory_type urnn` (see section below)
-4. **Lambda-discrepancy** — dual critic with different GAE lambdas: `--double_critic --ld_weight 0.1`
-5. **Memoryless baseline** — `--memoryless`
-6. **Perfect memory baseline** — `--perfect_memory` (fully observable)
+4. **Tunable EUNN** — Jing et al. 2017 unitary cell: `--memory_type eunn` (see section below)
+5. **QuRNN (Born-rule actor)** — complex actor head with Born-rule logits: `--policy_head born` (see section below)
+6. **Lambda-discrepancy** — dual critic with different GAE lambdas: `--double_critic --ld_weight 0.1`
+7. **Memoryless baseline** — `--memoryless`
+8. **Perfect memory baseline** — `--perfect_memory` (fully observable)
 
 ### uRNN details
 
@@ -181,13 +211,84 @@ python -m pobax.algos.ppo --env rocksample_11_11 --memory_type urnn --urnn_varia
 python -m pobax.algos.ppo --env tmaze_5 --memory_type urnn --lr 2.5e-4 1e-4 --complex_lr 8e-5 5e-5  # sweep both LRs
 ```
 
-**QuRNN follow-up (deferred)**: the extended cleanrl variant
-`ppo_minigrid_qurnn.py` uses a complex-valued actor head with Born-rule logits
-(`log(|W h|² + ε)`). It will be added in a follow-up PR once plain uRNN is
-convergence-verified on the core POMDPs. The hook point is the
-`if self.memory_type == 'urnn': embedding = jnp.concatenate([mem_out.real, mem_out.imag], ...)`
-branch in `pobax/models/actor_critic.py` — a future `--policy_head born` flag
-will swap the real-concat adapter for a complex actor head.
+### EUNN details
+
+Tunable Efficient Unitary Neural Network (Jing et al. 2017, [arXiv:1612.05231](https://arxiv.org/abs/1612.05231)).
+Parameterizes `W = D · F_L · F_{L-1} · ... · F_1`, where each `F_k` is a block-diagonal of `H/2`
+independent 2×2 unitary mixing units with alternating cyclic-shift permutations between layers.
+`L` is a capacity hyperparameter — at `L=H` the construction provably covers full `U(H)`.
+Lives in `pobax/models/network.py` as `EUNNCell`, wrapped by `ScannedURNN(variant='eunn')`.
+Activated with `--memory_type eunn`.
+
+- **Params** (all real angles; complex action on complex carry):
+  - `angles`: `(H, L)` real — even rows are per-pair phase φ, odd rows are per-pair rotation θ.
+  - `diag`: `(H,)` real — final diagonal phase applied as `h * exp(1j * D)`, same shape/role as `d1/d2/d3` in `LegacyURNNCell`.
+  - `input_embed`: complex `nn.Dense(H, param_dtype=complex64, use_bias=False)`, glorot-init (reused from uRNN).
+- **Unitary composition**: `EUNNCell._apply_unitary(angles, diag, h)` is a `@staticmethod` so
+  tests can materialize `U` by feeding identity columns without init/apply. Layer composition uses `jax.lax.scan`
+  over the `L` axis — O(1) trace size in `L`, JIT-friendly. Permutation between layers is a `jnp.roll(±1)`
+  alternating by layer parity.
+- **Carry + reset + real-concat adapter**: shares uRNN's machinery. Carry is complex64; reset uses
+  `initial_urnn_carry` via `get_memory_initial_carry` (routes `('urnn','eunn')` to same init);
+  `ActorCritic.__call__` concatenates `[mem_out.real, mem_out.imag]` for downstream heads.
+- **Dual-LR optimizer**: same dtype-split path as uRNN; gate widened to `memory_type in ('urnn','eunn')`.
+  Real `angles`/`diag` → `--lr`, complex `input_embed` kernel → `--complex_lr`.
+- **Config**: `--eunn_capacity L` (default `2`, matches the paper's RNN recommendation). Typed as
+  `int` (not `list[int]`) because `L` determines tensor shape `(H, L)` and is therefore not
+  vmap-sweepable — sweep via separate program runs.
+- **Ignored flags under `eunn`**: `--urnn_variant`, `--urnn_input_dense`, `--urnn_perm_seed`
+  (EUNN uses its own alternating cyclic-shift permutation, not the uRNN seeded permutation).
+  `--urnn_norm_scale` is reused for initial carry scaling.
+- **Activation**: same `ModReLU` as uRNN.
+- **Unit tests**: `tests/test_eunn.py` — float64 unitarity (tol 1e-10), float32 numerical sanity
+  (tol 1e-3) at several `(H, L)` including `L=H`, gradient finiteness at the equal-superposition
+  reset carry, shape/dtype end-to-end, and raises on odd `hidden_size`.
+
+Example:
+```bash
+python -m pobax.algos.ppo --env tmaze_5 --memory_type eunn --platform gpu --n_seeds 5
+python -m pobax.algos.ppo --env tmaze_5 --memory_type eunn --eunn_capacity 8 --hidden_size 64
+```
+
+### QuRNN (Born-rule actor) details
+
+Quantum-inspired actor head ported from `cleanrl_qrl_fork/cleanrl/ppo_atari_qurnn.py`.
+Instead of converting the complex hidden state to real via `[h.real, h.imag]` concatenation
+and feeding it to a standard MLP actor, the Born-rule actor operates directly on the complex
+hidden state and uses `log(|z|² + ε)` to produce real-valued logits.
+
+Lives in `pobax/models/discrete.py` as `BornRuleActor`. Activated with `--policy_head born`.
+
+- **Architecture**: single complex `nn.Dense(hidden_size → action_dim, param_dtype=complex64)`.
+  The complex linear map `z = W·h + b` preserves phase interference patterns; the Born rule
+  `log(|z|² + ε)` extracts real logits encoding those patterns as action preferences.
+  Optional intermediate complex hidden layer via `complex_hidden_size` constructor arg
+  (adds complex Dense → ModReLU before the output projection; default: None = single layer).
+- **Initialization**: `_glorot_complex_small(scale=0.01)` — Glorot-uniform scaled by 0.01,
+  matching the torch reference's `xavier_uniform_(gain=0.01)`. Produces near-uniform initial
+  policy (all `|z|²` values close to zero → similar logits). Verified that Flax Linen's
+  `glorot_uniform(dtype=complex64)` correctly initializes both real and imaginary parts
+  (unlike NNX which only initializes the real part).
+- **Critic**: unchanged — still receives `concat([h.real, h.imag])` (shape `2*hidden_size`).
+  Only the actor path changes.
+- **Embedding split** in `ActorCritic.__call__` (models/actor_critic.py):
+  when `policy_head='born'`, the actor receives raw complex `mem_out` while the critic
+  receives the real-concat embedding. When `policy_head='standard'` (default), both
+  receive real-concat (existing behavior).
+- **Optimizer**: complex Dense params in `BornRuleActor` are automatically routed to
+  `complex_lr` via the existing dtype-based `label_fn` in `_build_optimizer`. No changes needed.
+- **Constraints**: requires `memory_type in ('urnn','eunn')`, `is_discrete=True`.
+  Validated at config parse time (`process_args`) and at module construction (`setup`).
+- **Only supports discrete action spaces** — continuous Born-rule theory is not developed.
+- **Unit tests**: `tests/test_born_rule_actor.py` — shapes, action masking, near-uniform init,
+  complex hidden layer, full ActorCritic integration, gradient sanity (including z=0 edge case),
+  config validation, complex dtype routing, and Glorot complex initializer verification.
+
+Example:
+```bash
+python -m pobax.algos.ppo --env tmaze_10 --memory_type urnn --policy_head born --platform gpu --n_seeds 5
+python -m pobax.algos.ppo --env rocksample_11_11 --memory_type eunn --policy_head born --eunn_capacity 4
+```
 
 ## Environments
 
@@ -242,15 +343,35 @@ Best hyperparameters for each environment are in `scripts/hyperparams/<env>/best
 | `lambda1` | [0.5] | GAE lambda (critic 2, for LD) |
 | `ld_weight` | [0.0] | Lambda-discrepancy loss weight |
 | `clip_eps` | 0.2 | PPO clip epsilon |
+| `vf_coeff` | [0.5] | Value function loss weight (list = sweep) |
 | `entropy_coeff` | [0.01] | Entropy bonus weight |
-| `memory_type` | `'gru'` | Memory module: `'gru'` or `'urnn'` |
-| `urnn_variant` | `'standard'` | uRNN cell flavor: `'standard'` or `'legacy'` |
+| `memory_type` | `'gru'` | Memory module: `'gru'`, `'urnn'`, or `'eunn'` |
+| `urnn_variant` | `'standard'` | uRNN cell flavor: `'standard'` or `'legacy'` (ignored for EUNN) |
 | `urnn_input_dense` | True | Add complex input-embed inside uRNN (standard only) |
-| `urnn_norm_scale` | 1.0 | Scales the initial complex carry |
-| `urnn_perm_seed` | 0 | Seed for uRNN fixed permutation |
-| `complex_lr` | [8e-5] | LR for complex params under `memory_type='urnn'` |
+| `urnn_norm_scale` | 1.0 | Scales the initial complex carry (shared uRNN + EUNN) |
+| `urnn_perm_seed` | 0 | Seed for uRNN fixed permutation (ignored for EUNN) |
+| `eunn_capacity` | 2 | EUNN capacity `L`. Scalar `int` (not vmap-sweepable; determines tensor shape) |
+| `complex_lr` | [8e-5] | LR for complex params under `memory_type` in `{'urnn','eunn'}` |
+| `policy_head` | `'standard'` | Actor head: `'standard'` (MLP) or `'born'` (Born-rule complex actor) |
 | `n_seeds` | 5 | Seeds per config |
 | `total_steps` | 1.5e6 | Total environment steps |
+
+## SLURM Submission Infrastructure
+
+`submit_pobax.sh` iterates a (method × env) matrix, submitting one `sbatch` job per combo
+via `run_pobax.sbatch`. Each job reserves one GPU and runs N_SEEDS vmapped inside a single
+JAX process.
+
+- **Methods**: `urnn_standard`, `urnn_legacy`, `gru`, `ppo_ld`, `eunn_<L>` (e.g. `eunn_2`).
+  The method string encodes variant + capacity; `run_pobax.sbatch` parses it in a `case` switch.
+- **Hyperparams**: `BASE[env]` and `LD[env]` associative arrays in `submit_pobax.sh` hold
+  per-env tuned values. PPO-LD overrides lr/lambda from `LD[env]`.
+- **Auto-skip**: jobs with existing `results/<study>/` subdirs are skipped (FORCE=1 overrides).
+- **Log frequency thinning**: craftax envs use `steps_log_freq=16, update_log_freq=16` to
+  avoid ~15GB metric arrays from 100M-step runs.
+- **Env vars**: `STUDY_NAME` override, `COMPLEX_LR`, `SEED_BASE`, `N_SEEDS` all configurable.
+- **Custom jobs**: set env vars as shell prefix with `--export=ALL` (inline `--export="ALL,KEY=VAL"`
+  syntax can fail to set vars).
 
 ## Notes for Extending
 
@@ -259,9 +380,12 @@ Best hyperparameters for each environment are in `scripts/hyperparams/<env>/best
 2. Modify `ScannedRNN` in `models/network.py` to accept a cell type parameter, or create a new `ScannedXxx` class
 3. Add a `--memory_type` flag to `PPOHyperparams` in `config.py`
 4. Branch on it in `ActorCritic.setup()` in `models/actor_critic.py`
-5. Training loop, GAE, evaluation — all untouched
+5. If complex-valued: add carry init to `get_memory_initial_carry()` in `models/network.py`,
+   and the dtype-split optimizer in `_build_optimizer()` already handles complex params
+6. Training loop, GAE, evaluation — all untouched
 
 ### Adding a new environment
 1. Implement as a `gymnax.Environment` subclass in `pobax/envs/jax/`
 2. Register in `get_env()` in `pobax/envs/__init__.py`
 3. Add hyperparameter configs in `scripts/hyperparams/<env>/`
+4. For SLURM runs: add `BASE[env]` (and `LD[env]` if using PPO-LD) entries in `submit_pobax.sh`

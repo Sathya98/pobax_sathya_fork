@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from jax._src.nn.initializers import orthogonal, constant
 import numpy as np
 
-from .network import SmallImageCNN, FullImageCNN
+from .network import SmallImageCNN, FullImageCNN, ModReLU, _glorot_complex
 from .value import Critic
 from pobax.models.transformerXL import Transformer
 
@@ -26,6 +26,40 @@ class DiscreteActor(nn.Module):
             actor_mean = actor_mean * action_mask + (1 - action_mask) * (-1e6)
         pi = distrax.Categorical(logits=actor_mean)
         return pi
+
+
+def _glorot_complex_small(scale=0.01):
+    """Glorot-uniform scaled down for near-uniform initial Born-rule logits.
+    Matches torch complex_layer_init(std=0.01) which calls xavier_uniform_(gain=0.01)."""
+    base = nn.initializers.glorot_uniform(dtype=jnp.complex64)
+    def init(key, shape, dtype=jnp.complex64):
+        return scale * base(key, shape, dtype)
+    return init
+
+
+class BornRuleActor(nn.Module):
+    """Complex-valued actor using Born-rule logits: log(|W·z + b|² + ε).
+
+    Takes raw complex hidden state from uRNN/EUNN and produces a Categorical
+    distribution via quantum-inspired measurement (Born rule).
+    """
+    action_dim: int
+    hidden_size: int = 128
+    complex_hidden_size: int = None
+    eps: float = 1e-10
+
+    @nn.compact
+    def __call__(self, z, action_mask=None):
+        if self.complex_hidden_size is not None:
+            z = nn.Dense(self.complex_hidden_size, param_dtype=jnp.complex64,
+                         kernel_init=_glorot_complex(), bias_init=constant(0.0))(z)
+            z = ModReLU(hidden_size=self.complex_hidden_size)(z)
+        z = nn.Dense(self.action_dim, param_dtype=jnp.complex64,
+                     kernel_init=_glorot_complex_small(), bias_init=constant(0.0))(z)
+        logits = jnp.log(jnp.abs(z) ** 2 + self.eps).real
+        if action_mask is not None:
+            logits = logits * action_mask + (1 - action_mask) * (-1e6)
+        return distrax.Categorical(logits=logits)
 
 
 class DiscreteActorCriticTransformer(nn.Module):

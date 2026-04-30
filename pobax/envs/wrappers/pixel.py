@@ -173,7 +173,11 @@ class PixelCraftaxVecEnvWrapper(GymnaxWrapper):
         if not normalize:
             obs *= 255
         assert len(obs.shape) == 4
-        obs = obs[:,:27, :, :]
+        # Downscale from 10px/tile to 3px/tile: (N, 130, 110, 3) -> (N, 39, 33, 3)
+        n = obs.shape[0]
+        obs = jax.image.resize(obs, (n, 39, 33, 3), method='nearest')
+        # Crop out inventory (bottom 12 rows = 4 tile rows * 3px)
+        obs = obs[:, :27, :, :]
         return obs
     
     def observation_space(self, params):

@@ -19,11 +19,11 @@ from pobax.envs import get_env
 from pobax.models import get_network_fn
 from pobax.config import Hyperparams
 
-from pobax.definitions import PROJECT_ROOT_DIR
+from pobax.definitions import PROJECT_ROOT_DIR, IVI_STORAGE_DIR
 
 
 def get_results_path(args: Hyperparams, return_npy: bool = True):
-    results_dir = Path(PROJECT_ROOT_DIR, 'results')
+    results_dir = Path(IVI_STORAGE_DIR)
     results_dir.mkdir(exist_ok=True)
 
     args_hash = make_hash_md5(args.as_dict())

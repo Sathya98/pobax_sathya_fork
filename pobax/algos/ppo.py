@@ -252,7 +252,8 @@ def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
                          urnn_input_dense=args.urnn_input_dense,
                          urnn_norm_scale=args.urnn_norm_scale,
                          urnn_perm_seed=args.urnn_perm_seed,
-                         eunn_capacity=args.eunn_capacity)
+                         eunn_capacity=args.eunn_capacity,
+                         policy_head=args.policy_head)
 
     steps_filter = partial(filter_period_first_dim, n=args.steps_log_freq)
     update_filter = partial(filter_period_first_dim, n=args.update_log_freq)
@@ -457,6 +458,23 @@ def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
             metric['actor_loss'] = actor_loss_info.mean(axis=(-2, -1))
 
             rng = update_state[-1]
+
+            steps_per_update = args.num_envs * args.num_steps
+            log_every = max(1, 1_000_000 // steps_per_update)
+
+            def progress_callback(update_idx, info):
+                if int(update_idx) % log_every != 0:
+                    return
+                env_steps = int(update_idx + 1) * steps_per_update
+                returned = info["returned_episode"]
+                if returned.any():
+                    avg_ret = float(jnp.mean(info["returned_episode_returns"][returned]))
+                    print(f"[{env_steps:,} env steps] avg return={avg_ret:.2f}", flush=True)
+                else:
+                    print(f"[{env_steps:,} env steps] (no completed episodes)", flush=True)
+
+            jax.debug.callback(progress_callback, i, metric)
+
             if args.debug:
                 def callback(info):
                     timesteps = (
@@ -577,7 +595,7 @@ def madrona_main(args):
     out = train_jit(hparams, rng)
     new_t = time()
     total_runtime = new_t - t
-    print('Total runtime:', total_runtime)
+    print(f'Training complete. Total runtime: {total_runtime:.1f}s', flush=True)
 
     final_train_state = out['runner_state'][0]
     if not args.save_runner_state:
@@ -589,7 +607,7 @@ def madrona_main(args):
         'argument_order': train_args,
         'out': out,
         'args': args.as_dict(),
-        'total_runtime': total_runtime, 
+        'total_runtime': total_runtime,
         'final_train_state': final_train_state
     }
 
@@ -597,10 +615,10 @@ def madrona_main(args):
     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     save_args = orbax_utils.save_args_from_target(all_results)
 
-    print(f"Saving results to {results_path}")
+    print(f"Saving results to {results_path}", flush=True)
     orbax_checkpointer.save(results_path, all_results, save_args=save_args)
 
-    print("Done.")
+    print("Save complete.", flush=True)
 
 
 if __name__ == "__main__":
