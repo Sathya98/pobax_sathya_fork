@@ -95,7 +95,6 @@ pathspec==1.0.4
 pillow==12.2.0
 platformdirs==4.9.6
 pluggy==1.6.0
--e file:///home/sbhetha/projects/pobax_sathya_fork
 protobuf==6.33.6
 psutil==7.2.2
 pycodestyle==2.14.0
