@@ -45,15 +45,13 @@ class BornRuleActor(nn.Module):
     """
     action_dim: int
     hidden_size: int = 128
-    complex_hidden_size: int = None
     eps: float = 1e-10
 
     @nn.compact
     def __call__(self, z, action_mask=None):
-        if self.complex_hidden_size is not None:
-            z = nn.Dense(self.complex_hidden_size, param_dtype=jnp.complex64,
-                         kernel_init=_glorot_complex(), bias_init=constant(0.0))(z)
-            z = ModReLU(hidden_size=self.complex_hidden_size)(z)
+        z = nn.Dense(self.hidden_size, param_dtype=jnp.complex64,
+                        kernel_init=_glorot_complex(), bias_init=constant(0.0))(z)
+        z = ModReLU(hidden_size=self.hidden_size)(z)
         z = nn.Dense(self.action_dim, param_dtype=jnp.complex64,
                      kernel_init=_glorot_complex_small(), bias_init=constant(0.0))(z)
         logits = jnp.log(jnp.abs(z) ** 2 + self.eps).real

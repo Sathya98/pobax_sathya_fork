@@ -10,6 +10,8 @@
 #   DRY_RUN=1 ./submit_sweep.sh                               # print commands only
 #   FORCE=1 ./submit_sweep.sh                                 # rerun even if results exist
 #   METHODS="urnn_legacy" ENVS="tmaze_10" ./submit_sweep.sh   # subset
+#   SWEEP_ENTROPY="0.0 0.001" ENVS="craftax" ./submit_sweep.sh  # override grid for one env
+#   STUDY_SUFFIX="_entropy_low" ./submit_sweep.sh             # disambiguate reruns w/ different grids
 
 set -eo pipefail
 
@@ -20,27 +22,29 @@ mkdir -p logs/slurm
 # ═══════════════════════════════════════════════════════════════════════════
 # SLURM configuration — edit when switching nodes
 # ═══════════════════════════════════════════════════════════════════════════
-PARTITION="cees6000"
-ACCOUNT="ceesusers"
-NODELIST="ivi-cn031"
+PARTITION="${PARTITION:-gpu_a100}"
 GPUS="gpu:1"
 CPUS=12
-MEM="32G"
+MEM="64G"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Sweep grid — space-separated values; single value = not swept
+# Sweep grid — space-separated values; single value = not swept.
+# Each grid is shared across all (method, env) pairs in one invocation —
+# scope ENVS=... when grids should differ per env.
 # ═══════════════════════════════════════════════════════════════════════════
-SWEEP_LR="2.5e-3"
-SWEEP_COMPLEX_LR="1e-6 1e-5 5e-4"
-SWEEP_ENTROPY="0.01 0.05 0.1"
-SWEEP_LAMBDA0="0.7 0.8 0.9"
+SWEEP_LR="${SWEEP_LR:-2.5e-4}"
+SWEEP_COMPLEX_LR="${SWEEP_COMPLEX_LR:-8e-5}"
+SWEEP_ENTROPY="${SWEEP_ENTROPY:-0.01 0.05}"
+SWEEP_LAMBDA0="${SWEEP_LAMBDA0:-0.5 0.7}"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Run configuration
 # ═══════════════════════════════════════════════════════════════════════════
 N_SEEDS="${N_SEEDS:-3}"
 SEED_BASE="${SEED_BASE:-2026}"
+STEPS_LOG_FREQ="${STEPS_LOG_FREQ:-1}"
 UPDATE_LOG_FREQ="${UPDATE_LOG_FREQ:-1}"
+STUDY_SUFFIX="${STUDY_SUFFIX:-}"
 
 DRY_RUN="${DRY_RUN:-0}"
 FORCE="${FORCE:-0}"
@@ -54,14 +58,14 @@ ENVS="${ENVS:-tmaze_10 rocksample_11_11}"
 # ═══════════════════════════════════════════════════════════════════════════
 declare -A BASE
 BASE[tmaze_10]="32  4   128  1000000    04:00:00"
-BASE[rocksample_11_11]="256 8   128  5000000    16:00:00"
-BASE[rocksample_15_15]="512 16  128  10000000   24:00:00"
-BASE[battleship_10]="512 32  128  10000000   24:00:00"
-BASE[Navix-DMLab-Maze-01-v0]="512 256 128  10000000   24:00:00"
-BASE[Walker-V-v0]="256 4   128  50000000   48:00:00"
-BASE[HalfCheetah-V-v0]="256 4   128  50000000   48:00:00"
-BASE[craftax]="512 256 64   100000000  52:00:00"
-BASE[craftax_pixels]="512 256 64   100000000  52:00:00"
+BASE[rocksample_11_11]="256 8   128  3000000    16:00:00"
+BASE[rocksample_15_15]="512 16  128  6000000   24:00:00"
+BASE[battleship_10]="512 32  128  6000000   24:00:00"
+BASE[Navix-DMLab-Maze-01-v0]="512 256 128  4000000   24:00:00"
+BASE[Walker-V-v0]="256 4   128  25000000   48:00:00"
+BASE[HalfCheetah-V-v0]="256 4   128  25000000   48:00:00"
+BASE[craftax]="512 256 64   50000000  52:00:00"
+BASE[craftax_pixels]="512 256 64   50000000  52:00:00"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Method prefix mapping (matches plot_hp_sweep_curves.py METHOD_PREFIXES)
@@ -127,7 +131,7 @@ for method in $METHODS; do
         fi
 
         read -r hidden nenvs nsteps tsteps jobtime <<< "${BASE[$env]}"
-        study="${PREFIX[$method]}_${env}_hpsweep"
+        study="${PREFIX[$method]}_${env}_hpsweep${STUDY_SUFFIX}"
 
         # Auto-skip if results already exist.
         if [[ "$FORCE" != "1" ]] && compgen -G "$REPO_DIR/results/$study/*/" > /dev/null; then
@@ -146,6 +150,7 @@ for method in $METHODS; do
 --total_steps $tsteps \
 --seed $SEED_BASE --n_seeds $N_SEEDS \
 --platform gpu \
+--steps_log_freq $STEPS_LOG_FREQ \
 --update_log_freq $UPDATE_LOG_FREQ \
 --study_name $study \
 $method_flags"
@@ -153,8 +158,6 @@ $method_flags"
         cmd=(
             sbatch
             --partition="$PARTITION"
-            --account="$ACCOUNT"
-            --nodelist="$NODELIST"
             --gres="$GPUS"
             --cpus-per-task="$CPUS"
             --mem="$MEM"
@@ -162,7 +165,7 @@ $method_flags"
             --time="$jobtime"
             --output="logs/slurm/${study}_%j.out"
             --error="logs/slurm/${study}_%j.err"
-            --wrap="source ~/qrl_env/bin/activate && cd $REPO_DIR && $pycmd"
+            --wrap="source /projects/prjs2050/qrl_env/bin/activate && cd $REPO_DIR && $pycmd"
         )
 
         if [[ "$DRY_RUN" == "1" ]]; then

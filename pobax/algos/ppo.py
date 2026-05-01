@@ -467,11 +467,13 @@ def make_train(args: PPOHyperparams, rand_key: jax.random.PRNGKey):
                     return
                 env_steps = int(update_idx + 1) * steps_per_update
                 returned = info["returned_episode"]
+                stats = jax.local_devices()[0].memory_stats()
+                mem_str = f" | gpu_mem={stats['bytes_in_use']/2**30:.2f}GB (peak {stats['peak_bytes_in_use']/2**30:.2f}GB)"
                 if returned.any():
                     avg_ret = float(jnp.mean(info["returned_episode_returns"][returned]))
-                    print(f"[{env_steps:,} env steps] avg return={avg_ret:.2f}", flush=True)
+                    print(f"[{env_steps:,} env steps] avg return={avg_ret:.2f}{mem_str}", flush=True)
                 else:
-                    print(f"[{env_steps:,} env steps] (no completed episodes)", flush=True)
+                    print(f"[{env_steps:,} env steps] (no completed episodes){mem_str}", flush=True)
 
             jax.debug.callback(progress_callback, i, metric)
 
