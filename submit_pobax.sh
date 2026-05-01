@@ -55,7 +55,7 @@ METHODS="${METHODS:-urnn_standard urnn_legacy gru ppo_ld}"
 #
 # Fields: env hidden num_envs num_steps lr lambda0 entropy total_steps time
 declare -A BASE
-BASE[tmaze_10]="32  4   128  2.5e-3  0.7   0.01  1000000    01:00:00"
+BASE[tmaze_10]="32  4   128  2.5e-3  0.7   0.01  3000000    01:00:00"
 BASE[rocksample_11_11]="256 8   128  2.5e-3  0.7   0.2   5000000    04:00:00"
 BASE[rocksample_15_15]="512 16  128  2.5e-3  0.7   0.2   10000000   08:00:00"
 BASE[battleship_10]="512 32  128  2.5e-3  0.7   0.05  10000000   10:00:00"
@@ -97,6 +97,12 @@ total=0
 skipped=0
 for method in $METHODS; do
     for env in $ENVS; do
+        # Any tmaze_{length} reuses tmaze_10 settings when no explicit entry exists.
+        if [[ -z "${BASE[$env]:-}" && "$env" =~ ^tmaze_[0-9]+$ ]]; then
+            BASE[$env]="${BASE[tmaze_10]}"
+            LD[$env]="${LD[tmaze_10]}"
+        fi
+
         if [[ -z "${BASE[$env]:-}" ]]; then
             echo "  [skip]    unknown env $env (no BASE entry)"
             continue
