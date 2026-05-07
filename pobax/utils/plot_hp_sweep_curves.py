@@ -273,7 +273,7 @@ def plot_sweep(args: SweepPlotArgs, out_dir: Path):
     fig.tight_layout()
 
     suffix = f'top{len(plot_idx)}of{n_cfgs}' if len(plot_idx) < n_cfgs else f'{n_cfgs}configs'
-    out = out_dir / f'{args.method}_{args.env}_hpsweep_combined{len(study_dirs)}_{suffix}.pdf'
+    out = out_dir / f'{args.method}_{args.env}_hpsweep_c{len(study_dirs)}_{suffix}.pdf'
     fig.savefig(out)
     print(f'wrote {out}')
 

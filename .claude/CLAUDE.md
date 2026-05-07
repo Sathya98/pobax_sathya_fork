@@ -389,3 +389,10 @@ JAX process.
 2. Register in `get_env()` in `pobax/envs/__init__.py`
 3. Add hyperparameter configs in `scripts/hyperparams/<env>/`
 4. For SLURM runs: add `BASE[env]` (and `LD[env]` if using PPO-LD) entries in `submit_pobax.sh`
+
+## Design docs / planned work
+
+- [docs/superpowers/specs/2026-05-07-phase-probing-analysis-design.md](../docs/superpowers/specs/2026-05-07-phase-probing-analysis-design.md)
+  — phase probing analysis on Battleship + T-Maze (uRNN/EUNN/GRU) to
+  characterize what trained complex hidden-state phases encode about
+  belief state. Pending implementation.

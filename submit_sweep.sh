@@ -25,7 +25,7 @@ mkdir -p logs/slurm
 PARTITION="${PARTITION:-gpu_a100}"
 GPUS="gpu:1"
 CPUS=12
-MEM="64G"
+MEM="128G"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Sweep grid — space-separated values; single value = not swept.
@@ -62,8 +62,8 @@ BASE[rocksample_11_11]="256 8   256  3000000    16:00:00"
 BASE[rocksample_15_15]="512 16  256  6000000   24:00:00"
 BASE[battleship_10]="512 32  256  6000000   24:00:00"
 BASE[Navix-DMLab-Maze-01-v0]="512 256 128  4000000   24:00:00"
-BASE[Walker-V-v0]="256 4   128  25000000   48:00:00"
-BASE[HalfCheetah-V-v0]="256 4   128  25000000   48:00:00"
+BASE[Walker-V-v0]="256 4   256  25000000   48:00:00"
+BASE[HalfCheetah-V-v0]="256 4   256  25000000   48:00:00"
 BASE[craftax]="512 256 128   40000000  48:00:00"
 BASE[craftax_pixels]="512 256 128   40000000  48:00:00"
 
