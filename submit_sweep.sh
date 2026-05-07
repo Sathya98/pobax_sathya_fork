@@ -57,15 +57,15 @@ ENVS="${ENVS:-tmaze_10 rocksample_11_11}"
 # Times are padded for vmap over (n_configs × n_seeds).
 # ═══════════════════════════════════════════════════════════════════════════
 declare -A BASE
-BASE[tmaze_10]="32  4   128  1000000    04:00:00"
-BASE[rocksample_11_11]="256 8   128  3000000    16:00:00"
-BASE[rocksample_15_15]="512 16  128  6000000   24:00:00"
-BASE[battleship_10]="512 32  128  6000000   24:00:00"
+BASE[tmaze_10]="32  4   256  5000000    04:00:00"
+BASE[rocksample_11_11]="256 8   256  3000000    16:00:00"
+BASE[rocksample_15_15]="512 16  256  6000000   24:00:00"
+BASE[battleship_10]="512 32  256  6000000   24:00:00"
 BASE[Navix-DMLab-Maze-01-v0]="512 256 128  4000000   24:00:00"
 BASE[Walker-V-v0]="256 4   128  25000000   48:00:00"
 BASE[HalfCheetah-V-v0]="256 4   128  25000000   48:00:00"
-BASE[craftax]="512 256 64   50000000  52:00:00"
-BASE[craftax_pixels]="512 256 64   50000000  52:00:00"
+BASE[craftax]="512 256 128   40000000  48:00:00"
+BASE[craftax_pixels]="512 256 128   40000000  48:00:00"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Method prefix mapping (matches plot_hp_sweep_curves.py METHOD_PREFIXES)

@@ -1,0 +1,9 @@
+# Best HPs from sweep: urnn_standard_tmaze_100_hpsweep
+# Config [37]: clr=0.0001_ent=0.005_λ0=0.9 (mean final return = 3.995)
+COMPLEX_LR: 0.0001
+ENTROPY_COEFF: 0.005
+LAMBDA0: 0.9
+LAMBDA1: 0.5
+LD_WEIGHT: 0
+LR: 0.00025
+VF_COEFF: 0.5
