@@ -1,0 +1,9 @@
+# Best HPs from combined sweeps: urnn_legacy_Walker-V-v0_hpsweep* (n=1)
+# Config [29]: clr=7.999999797903001e-05_ent=0.009999999776482582_λ0=0.949999988079071 (mean final return = 920.768)
+COMPLEX_LR: 8e-05
+ENTROPY_COEFF: 0.01
+LAMBDA0: 0.95
+LAMBDA1: 0.5
+LD_WEIGHT: 0
+LR: 0.00025
+VF_COEFF: 0.5

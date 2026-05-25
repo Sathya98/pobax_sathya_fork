@@ -1,0 +1,9 @@
+# Best HPs from combined sweeps: eunn_2_rocksample_15_15_hpsweep* (n=1)
+# Config [22]: clr=9.999999747378752e-06_ent=0.20000000298023224_λ0=0.800000011920929 (mean final return = 11.071)
+COMPLEX_LR: 1e-05
+ENTROPY_COEFF: 0.2
+LAMBDA0: 0.8
+LAMBDA1: 0.5
+LD_WEIGHT: 0
+LR: 0.00025
+VF_COEFF: 0.5

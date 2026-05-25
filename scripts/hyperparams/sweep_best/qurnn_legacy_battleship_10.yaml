@@ -1,0 +1,9 @@
+# Best HPs from combined sweeps: qurnn_legacy_battleship_10_hpsweep* (n=1)
+# Config [17]: clr=9.999999747378752e-06_ent=0.009999999776482582_λ0=0.800000011920929 (mean final return = 12.462)
+COMPLEX_LR: 1e-05
+ENTROPY_COEFF: 0.01
+LAMBDA0: 0.8
+LAMBDA1: 0.5
+LD_WEIGHT: 0
+LR: 0.0025
+VF_COEFF: 0.5

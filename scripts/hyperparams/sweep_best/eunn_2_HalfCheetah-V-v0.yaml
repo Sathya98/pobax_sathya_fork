@@ -1,0 +1,9 @@
+# Best HPs from combined sweeps: eunn_2_HalfCheetah-V-v0_hpsweep* (n=1)
+# Config [1]: clr=9.999999974752427e-07_ent=0.004999999888241291_λ0=0.8999999761581421 (mean final return = 1405.852)
+COMPLEX_LR: 1e-06
+ENTROPY_COEFF: 0.005
+LAMBDA0: 0.9
+LAMBDA1: 0.5
+LD_WEIGHT: 0
+LR: 0.00025
+VF_COEFF: 0.5

@@ -25,7 +25,7 @@ mkdir -p logs/slurm
 PARTITION="${PARTITION:-gpu_a100}"
 GPUS="gpu:1"
 CPUS=12
-MEM="128G"
+MEM="64G"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Sweep grid — space-separated values; single value = not swept.
@@ -125,12 +125,17 @@ for method in $METHODS; do
     esac
 
     for env in $ENVS; do
-        if [[ -z "${BASE[$env]:-}" ]]; then
+        # tmaze_<len> envs reuse tmaze_10 settings — ppo accepts any length.
+        base_key="$env"
+        if [[ -z "${BASE[$base_key]:-}" && "$env" == tmaze_* ]]; then
+            base_key="tmaze_10"
+        fi
+        if [[ -z "${BASE[$base_key]:-}" ]]; then
             echo "  [skip]    unknown env $env (no BASE entry)"
             continue
         fi
 
-        read -r hidden nenvs nsteps tsteps jobtime <<< "${BASE[$env]}"
+        read -r hidden nenvs nsteps tsteps jobtime <<< "${BASE[$base_key]}"
         study="${PREFIX[$method]}_${env}_hpsweep${STUDY_SUFFIX}"
 
         # Auto-skip if results already exist.
@@ -155,6 +160,16 @@ for method in $METHODS; do
 --study_name $study \
 $method_flags"
 
+        # Pixel-obs envs route observations through a CNN embedding. On craftax
+        # the cuDNN conv autotuner probes algorithms needing 78-158 GB workspace,
+        # which OOM the GPU and crash the job (CUDA_ERROR_ILLEGAL_ADDRESS).
+        # Disabling conv autotuning sidesteps the bad probes; the wider memory
+        # arena helps the genuine CNN activations. No-op for vector-obs envs.
+        xla_env=""
+        if [[ "$env" == *pixels* ]]; then
+            xla_env="XLA_FLAGS='--xla_gpu_strict_conv_algorithm_picker=false --xla_gpu_autotune_level=0' XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 "
+        fi
+
         cmd=(
             sbatch
             --partition="$PARTITION"
@@ -165,7 +180,7 @@ $method_flags"
             --time="$jobtime"
             --output="logs/slurm/${study}_%j.out"
             --error="logs/slurm/${study}_%j.err"
-            --wrap="source /projects/prjs2050/qrl_env/bin/activate && cd $REPO_DIR && $pycmd"
+            --wrap="source /projects/prjs2050/qrl_env/bin/activate && cd $REPO_DIR && ${xla_env}$pycmd"
         )
 
         if [[ "$DRY_RUN" == "1" ]]; then
