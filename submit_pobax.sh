@@ -47,6 +47,7 @@ COMPLEX_LR="${COMPLEX_LR:-8e-5}"
 DRY_RUN="${DRY_RUN:-0}"
 SMOKE="${SMOKE:-0}"
 FORCE="${FORCE:-0}"
+STUDY_SUFFIX="${STUDY_SUFFIX:-_paper}"
 METHODS="${METHODS:-urnn_standard urnn_legacy gru ppo_ld}"
 
 # Base config (shared by urnn_standard / urnn_legacy / gru). Sourced from
@@ -55,13 +56,13 @@ METHODS="${METHODS:-urnn_standard urnn_legacy gru ppo_ld}"
 #
 # Fields: env hidden num_envs num_steps lr lambda0 entropy total_steps time
 declare -A BASE
-BASE[tmaze_10]="32  4   128  2.5e-3  0.7   0.01  3000000    01:00:00"
-BASE[rocksample_11_11]="256 8   128  2.5e-3  0.7   0.2   5000000    04:00:00"
-BASE[rocksample_15_15]="512 16  128  2.5e-3  0.7   0.2   10000000   08:00:00"
-BASE[battleship_10]="512 32  128  2.5e-3  0.7   0.05  10000000   10:00:00"
-BASE[Navix-DMLab-Maze-01-v0]="512 256 128  2.5e-4  0.9   0.01  10000000   15:00:00"
-BASE[Walker-V-v0]="256 4   128  2.5e-4  0.95  0.01  50000000   36:00:00"
-BASE[HalfCheetah-V-v0]="256 4   128  2.5e-4  0.9   0.01  50000000   36:00:00"
+BASE[tmaze_10]="32  4   256  2.5e-3  0.7   0.01  5000000    05:00:00"
+BASE[rocksample_11_11]="256 8   256  2.5e-3  0.7   0.2   5000000    06:00:00"
+BASE[rocksample_15_15]="512 16  256  2.5e-3  0.7   0.2   10000000   12:00:00"
+BASE[battleship_10]="512 32  256  2.5e-3  0.7   0.05  10000000   12:00:00"
+BASE[Navix-DMLab-Maze-01-v0]="512 256 256  2.5e-4  0.9   0.01  10000000   15:00:00"
+BASE[Walker-V-v0]="256 4   256  2.5e-4  0.95  0.01  50000000   36:00:00"
+BASE[HalfCheetah-V-v0]="256 4   256  2.5e-4  0.9   0.01  50000000   36:00:00"
 BASE[craftax]="512 256 64   2.5e-4  0.5   0.01  100000000  52:00:00"
 BASE[craftax_pixels]="512 256 64   2.5e-4  0.5   0.01  100000000  52:00:00"
 
@@ -90,7 +91,7 @@ echo "Submitting (method, env) matrix to ivi-cn014."
 echo "  methods: $METHODS"
 echo "  envs   : $ENVS"
 echo "  N_SEEDS=$N_SEEDS  SEED_BASE=$SEED_BASE  COMPLEX_LR=$COMPLEX_LR"
-echo "  SMOKE=$SMOKE  DRY_RUN=$DRY_RUN  FORCE=$FORCE"
+echo "  SMOKE=$SMOKE  DRY_RUN=$DRY_RUN  FORCE=$FORCE  STUDY_SUFFIX=$STUDY_SUFFIX"
 echo
 
 total=0
@@ -125,7 +126,7 @@ for method in $METHODS; do
             jobtime=00:20:00
         fi
 
-        study="${method}_${env}_paper"
+        study="${method}_${env}${STUDY_SUFFIX}"
         [[ "$SMOKE" == "1" ]] && study="smoke_${study}"
 
         # Auto-skip if a run subdir already exists under results/<study>/.
@@ -143,7 +144,7 @@ for method in $METHODS; do
         fi
 
         exports="ALL"
-        exports+=",METHOD=${method},ENV_NAME=${env}"
+        exports+=",METHOD=${method},ENV_NAME=${env},STUDY_SUFFIX=${STUDY_SUFFIX}"
         exports+=",HIDDEN_SIZE=${hidden},NUM_ENVS=${nenvs},NUM_STEPS=${nsteps}"
         exports+=",LR=${lr},LAMBDA0=${lam0}"
         exports+=",ENTROPY_COEFF=${ent},TOTAL_STEPS=${tsteps}"

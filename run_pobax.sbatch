@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-#SBATCH --partition=cees6000
+#SBATCH --partition=all
 #SBATCH --account=ceesusers
-#SBATCH --nodelist=ivi-cn031
+#SBATCH --nodelist=ivi-cn015
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #
 # --job-name, --time, --output, --error are set per-combo by submit_pobax.sh
@@ -45,6 +45,7 @@ SEED_BASE="${SEED_BASE:-2025}"
 N_SEEDS="${N_SEEDS:-5}"
 STEPS_LOG_FREQ="${STEPS_LOG_FREQ:-1}"
 UPDATE_LOG_FREQ="${UPDATE_LOG_FREQ:-1}"
+VF_COEFF="${VF_COEFF:-0.5}"
 
 # Override env vars from sweep-best YAML if it exists.
 SWEEP_BEST="$REPO_DIR/scripts/hyperparams/sweep_best/${METHOD}_${ENV_NAME}.yaml"
@@ -53,7 +54,10 @@ if [[ -f "$SWEEP_BEST" ]]; then
     while IFS=': ' read -r key val; do
         [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
         export "$key=$val"
+        echo "  override: $key=$val"
     done < "$SWEEP_BEST"
+else
+    echo "WARNING: no sweep-best YAML found at $SWEEP_BEST"
 fi
 
 # Build method-specific CLI args (array -> safe word-splitting).
@@ -90,14 +94,15 @@ if [[ "$METHOD" == "ppo_ld" ]]; then
     LD_FLAGS=(--lambda1 "$LAMBDA1" --ld_weight "$LD_WEIGHT")
 fi
 
-STUDY="${STUDY_NAME:-${METHOD}_${ENV_NAME}_paper}"
+STUDY_SUFFIX="${STUDY_SUFFIX:-_paper}"
+STUDY="${STUDY_NAME:-${METHOD}_${ENV_NAME}${STUDY_SUFFIX}}"
 
 echo "==== ${STUDY} ===="
 echo "host=$(hostname)  job=${SLURM_JOB_ID:-none}  nodelist=${SLURM_JOB_NODELIST:-?}"
 echo "gpu: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1)"
 python -c "import pobax, jax; print(f'pobax ok; jax={jax.__version__}; devices={jax.devices()}')"
 echo "hparams: hidden=$HIDDEN_SIZE num_envs=$NUM_ENVS num_steps=$NUM_STEPS"
-echo "         lr=$LR  lambda0=$LAMBDA0  ent=$ENTROPY_COEFF  total=$TOTAL_STEPS"
+echo "         lr=$LR  lambda0=$LAMBDA0  ent=$ENTROPY_COEFF  vf=$VF_COEFF  total=$TOTAL_STEPS"
 echo "         seeds=${N_SEEDS}@${SEED_BASE}  method=$METHOD  complex_lr=$COMPLEX_LR"
 [[ "$METHOD" == eunn_* || "$METHOD" == qeunn_* ]] && echo "         eunn_capacity=$EUNN_CAPACITY"
 [[ "$METHOD" == q* ]] && echo "         policy_head=born"
@@ -115,6 +120,7 @@ python -m pobax.algos.ppo \
     --lr "$LR" \
     --lambda0 "$LAMBDA0" \
     --entropy_coeff "$ENTROPY_COEFF" \
+    --vf_coeff "$VF_COEFF" \
     --total_steps "$TOTAL_STEPS" \
     --seed "$SEED_BASE" \
     --n_seeds "$N_SEEDS" \
