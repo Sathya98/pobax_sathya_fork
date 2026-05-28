@@ -1,5 +1,5 @@
-# Best HPs from sweep: urnn_standard_rocksample_15_15_hpsweep
-# Config [30]: clr=8e-05_ent=0.15_λ0=0.7 (mean final return = 20.176)
+# Best HPs from combined sweeps: urnn_standard_rocksample_15_15_hpsweep* (n=3)
+# Config [102]: clr=7.999999797903001e-05_ent=0.15000000596046448_λ0=0.699999988079071_lr=0.0002500000118743628 (mean final return = 20.176)
 COMPLEX_LR: 8e-05
 ENTROPY_COEFF: 0.15
 LAMBDA0: 0.7

@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-#SBATCH --partition=all
-#SBATCH --account=ceesusers
-#SBATCH --nodelist=ivi-cn015
+#SBATCH --partition=gpu_a100
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=128G
 #
 # --job-name, --time, --output, --error are set per-combo by submit_pobax.sh
 # on the sbatch CLI (NOT #SBATCH'd here).
@@ -35,7 +33,7 @@ cd "$REPO_DIR"
 
 # slurm does not source ~/.bashrc; activate qrl_env explicitly (CLAUDE.md).
 # shellcheck disable=SC1091
-source ~/qrl_env/bin/activate
+source /projects/prjs2050/qrl_env/bin/activate
 
 : "${METHOD:?}"; : "${ENV_NAME:?}"; : "${HIDDEN_SIZE:?}"; : "${NUM_ENVS:?}"
 : "${NUM_STEPS:?}"; : "${LR:?}"; : "${LAMBDA0:?}"; : "${ENTROPY_COEFF:?}"

@@ -113,20 +113,34 @@ def _load_one_study(study_dir: Path, discounted: bool):
 
 
 def _validate_studies(loaded):
-    """Hard-error on x-axis-breaking mismatches (matches user's equal-budget assumption)."""
+    """Hard-error on log-freq mismatches (those break the shared x-axis).
+
+    `n_updates` is allowed to differ by a small fencepost; the caller clips
+    all returns to the min so the leading update_log_freq * num_steps *
+    num_envs grid still lines up.
+    """
     ref_returns, _, ref_args = loaded[0]
-    ref_n_updates = ref_returns.shape[-1]
     refs = {k: _scalarize(ref_args.get(k)) for k in ('update_log_freq', 'steps_log_freq')}
     for returns, _, args in loaded[1:]:
-        if returns.shape[-1] != ref_n_updates:
-            raise ValueError(
-                f'n_updates mismatch across studies (got {returns.shape[-1]} vs {ref_n_updates}); '
-                f'all studies must run to the same budget'
-            )
         for k, ref_v in refs.items():
             v = _scalarize(args.get(k))
             if v != ref_v:
                 raise ValueError(f'{k} mismatch across studies (got {v} vs {ref_v})')
+
+
+def _clip_to_min_updates(loaded):
+    """Trim trailing updates so all studies share the shortest n_updates.
+
+    Studies launched at the same nominal budget can disagree by ~1 update
+    due to total_steps rounding or a trailing metric tick. Clip the tail
+    to align them; warn if anything was actually trimmed.
+    """
+    n_updates_per_study = [r.shape[-1] for r, _, _ in loaded]
+    min_n = min(n_updates_per_study)
+    if max(n_updates_per_study) != min_n:
+        print(f'  warning: n_updates differs across studies {n_updates_per_study}; '
+              f'clipping all to {min_n} for plotting')
+    return [(r[..., :min_n], sw, ar) for (r, sw, ar) in loaded]
 
 
 def _combine_studies(loaded):
@@ -140,6 +154,7 @@ def _combine_studies(loaded):
     arrays are concatenated along axis 0.
     """
     _validate_studies(loaded)
+    loaded = _clip_to_min_updates(loaded)
 
     swept_keys = sorted({k for _, sw, _ in loaded for k in sw})
     dedup_keys = tuple(swept_keys) + DEDUP_EXTRA_KEYS

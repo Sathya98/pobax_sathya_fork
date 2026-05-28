@@ -1,5 +1,5 @@
-# Best HPs from combined sweeps: eunn_2_tmaze_75_hpsweep* (n=1)
-# Config [30]: clr=4.999999873689376e-05_ent=0.009999999776482582_λ0=0.800000011920929 (mean final return = 3.987)
+# Best HPs from combined sweeps: eunn_2_tmaze_75_hpsweep* (n=2)
+# Config [30]: clr=4.999999873689376e-05_ent=0.009999999776482582_λ0=0.800000011920929_lr=0.0002500000118743628 (mean final return = 3.987)
 COMPLEX_LR: 5e-05
 ENTROPY_COEFF: 0.01
 LAMBDA0: 0.8

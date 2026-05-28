@@ -1,5 +1,5 @@
-# Best HPs from sweep: qurnn_standard_rocksample_15_15_hpsweep
-# Config [33]: clr=8e-05_ent=0.2_λ0=0.7 (mean final return = 16.260)
+# Best HPs from combined sweeps: qurnn_standard_rocksample_15_15_hpsweep* (n=3)
+# Config [87]: clr=7.999999797903001e-05_ent=0.20000000298023224_λ0=0.699999988079071_lr=0.0002500000118743628_ns=2.6e+02 (mean final return = 16.260)
 COMPLEX_LR: 8e-05
 ENTROPY_COEFF: 0.2
 LAMBDA0: 0.7
