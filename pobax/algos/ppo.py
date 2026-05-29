@@ -16,7 +16,7 @@ import numpy as np
 import optax
 import orbax.checkpoint
 
-from pobax.algos.run_helper import vmap_and_train
+from pobax.algos.run_helper_incremental import vmap_and_train
 from pobax.config import PPOHyperparams
 from pobax.envs import get_env
 from pobax.envs.wrappers.gymnax import LogEnvState

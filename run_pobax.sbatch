@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-#SBATCH --partition=gpu_a100
+#SBATCH --partition=cees6000
+#SBATCH --account=ceesusers
+#SBATCH --nodelist=ivi-cn031
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=24
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #
 # --job-name, --time, --output, --error are set per-combo by submit_pobax.sh
