@@ -38,11 +38,10 @@ def vmap_and_train(args: Hyperparams,
 
     t = time()
 
-    out = jax.block_until_ready(train_jit(hparams, rngs))
-
-    new_t = time()
-    total_runtime = new_t - t
-    print(f'Training complete. Total runtime: {total_runtime:.1f}s', flush=True)
+    # Do NOT call block_until_ready on the full output pytree — JAX 0.6.x
+    # deadlocks when synchronising very large pytrees (18+ GB across many
+    # leaves).  Instead, let the per-leaf device_get below handle blocking.
+    out = train_jit(hparams, rngs)
 
     final_train_state = out['runner_state'][0]
     if not args.save_runner_state:
@@ -51,10 +50,15 @@ def vmap_and_train(args: Hyperparams,
     results_path = get_results_path(args, return_npy=False)
 
     # Transfer from device to host incrementally (leaf-by-leaf) to avoid
-    # XLA runtime deadlock on large pytrees. Release device refs between
-    # transfers so XLA can reclaim GPU memory.
+    # XLA runtime deadlock on large pytrees. The first device_get call
+    # implicitly blocks until the JIT'd computation finishes. Release
+    # device refs between transfers so XLA can reclaim GPU memory.
     print("Transferring results from GPU to host...", flush=True)
     metric_np = _device_get_with_progress('metric', out.pop('metric'))
+
+    total_runtime = time() - t
+    print(f'Training complete. Total runtime: {total_runtime:.1f}s', flush=True)
+
     final_eval_np = _device_get_with_progress('final_eval', out.pop('final_eval_metric'))
     train_state_np = _device_get_with_progress('train_state', final_train_state)
     del final_train_state, out

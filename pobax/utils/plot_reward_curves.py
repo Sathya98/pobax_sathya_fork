@@ -41,6 +41,7 @@ class PlotArgs(Tap):
     smooth: Literal['none', 'ema', 'savgol'] = 'none'     # smoothing style, see _apply_smooth
     ema_weight: float = 0.9                               # EMA weight (TensorBoard slider convention)
     out_dir: str = None                                   # default: <repo>/images/urnn_plots/
+    subsample: int = 1                                    # thin updates axis by this factor (e.g. 16 for heavyweight runs)
 
 
 def _ema(x: np.ndarray, weight: float) -> np.ndarray:
@@ -60,24 +61,28 @@ def _apply_smooth(y: np.ndarray, args: 'PlotArgs') -> np.ndarray:
     return y
 
 
-def _load_run(study_dir: Path, discounted: bool = False):
+def _load_run(study_dir: Path, discounted: bool = False, subsample: int = 1):
     """Load latest ckpt under study_dir; return (returns[n_seeds, n_updates], args).
 
     returned_(discounted_)episode_returns has shape
     (n_hparams=1, n_seeds, n_updates, n_steps, n_envs); we squeeze the hparams
     axis and mean over (n_steps, n_envs) to get one point per PPO update.
+    subsample > 1 thins the update axis to reduce memory and plot weight.
     """
     run_dirs = sorted(p for p in study_dir.iterdir() if p.is_dir())
     if not run_dirs:
         raise FileNotFoundError(f'no run subdirs under {study_dir}')
     restored = orbax.checkpoint.PyTreeCheckpointer().restore(str(run_dirs[-1]))
     key = 'returned_discounted_episode_returns' if discounted else 'returned_episode_returns'
-    arr = np.asarray(restored['out']['metric'][key]).squeeze(0).mean(axis=(-2, -1))
+    arr = np.asarray(restored['out']['metric'][key])
+    if subsample > 1:
+        arr = arr[:, :, ::subsample]
+    arr = arr.squeeze(0).mean(axis=(-2, -1))
     return arr, restored['args']
 
 
-def _x_axis(run_args, n_updates):
-    update_log_freq = int(run_args.get('update_log_freq', 1))
+def _x_axis(run_args, n_updates, subsample: int = 1):
+    update_log_freq = int(run_args.get('update_log_freq', 1)) * subsample
     return np.arange(n_updates) * update_log_freq * int(run_args['num_steps']) * int(run_args['num_envs'])
 
 
@@ -89,7 +94,7 @@ def plot_compare(env: str, args: PlotArgs, out_dir: Path):
         study_dir = results_root / tmpl.format(env=env)
         searched.append(study_dir)
         if study_dir.exists():
-            returns, run_args = _load_run(study_dir, discounted=args.discounted)
+            returns, run_args = _load_run(study_dir, discounted=args.discounted, subsample=args.subsample)
             loaded.append((label, returns, run_args))
     
     if not loaded:
@@ -105,7 +110,7 @@ def plot_compare(env: str, args: PlotArgs, out_dir: Path):
         # seeds on axis 0 -> mean_confidence_interval reduces that axis
         mu, h = mean_confidence_interval(returns, axis=0)
         mu = _apply_smooth(mu, args)
-        x = _x_axis(run_args, mu.shape[0])
+        x = _x_axis(run_args, mu.shape[0], args.subsample)
         ax.plot(x, mu, color=color, label=label)
         ax.fill_between(x, mu - h, mu + h, color=color, alpha=0.2)
 
@@ -124,9 +129,9 @@ def plot_per_seed(env: str, method: str, args: PlotArgs, out_dir: Path):
     if method not in METHOD_STUDIES:
         raise ValueError(f'unknown method {method!r}; known: {sorted(METHOD_STUDIES)}')
     study_dir = Path(IVI_STORAGE_DIR, METHOD_STUDIES[method].format(env=env))
-    returns, run_args = _load_run(study_dir, discounted=args.discounted)
+    returns, run_args = _load_run(study_dir, discounted=args.discounted, subsample=args.subsample)
     n_seeds, n_updates = returns.shape
-    x = _x_axis(run_args, n_updates)
+    x = _x_axis(run_args, n_updates, args.subsample)
 
     fig, ax = plt.subplots(figsize=(6, 4))
     for i in range(n_seeds):
